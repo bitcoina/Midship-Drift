@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Midship Drift sprite studio</title>
+<!-- Builds low-poly 3D models of every car and roadside object and renders them
+     from the game's camera angles. tools/render.js drives this page headlessly;
+     tools/pixelate.py turns the renders into sprite sheets. -->
+<script src="node_modules/three/build/three.min.js"></script>
+</head>
+<body style="margin:0;background:#222">
+<script>
+'use strict';
+const T = THREE;
+const renderer = new T.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.useLegacyLights = true;
+renderer.setClearColor(0x000000, 0);
+document.body.appendChild(renderer.domElement);
+
+// ------------------------------------------------------------------ helpers
+function seeded(seed) {
+  let s = (seed >>> 0) || 1;
+  return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
+}
+const phong = (color, shininess = 30, specular = 0x222222, extra = {}) =>
+  new T.MeshPhongMaterial({ color, shininess, specular, ...extra });
+const MAT = {
+  trim: () => phong(0x17171b, 25, 0x333333),
+  glass: () => phong(0x16202c, 140, 0x9fb8d8),
+  chrome: () => phong(0xc9cdd6, 150, 0xffffff),
+  rubber: () => phong(0x111113, 6, 0x111111),
+  rim: () => phong(0x9aa0aa, 90, 0xdddddd),
+  lamp: (brake, col = 0xc8141c) => phong(brake ? 0xffd0c0 : col, 120, 0xffaaaa, { emissive: brake ? 0xff3018 : 0x8a0a0a }),
+  amber: () => phong(0xe88a12, 120, 0xffddaa, { emissive: 0x3a1a00 }),
+};
+const paint = hex => phong(new T.Color(hex), 90, 0x8a8a8a);
+
+function box(w, h, d, mat, x = 0, y = 0, z = 0) {
+  const m = new T.Mesh(new T.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  return m;
+}
+function at(m, x, y, z) { m.position.set(x, y, z); return m; }
+function cyl(rt, rb, h, mat, segs = 16) {
+  return new T.Mesh(new T.CylinderGeometry(rt, rb, h, segs), mat);
+}
+// Tube between two points (roll cages, posts).
+function tube(a, b, r, mat) {
+  const A = new T.Vector3(...a), B = new T.Vector3(...b);
+  const len = A.distanceTo(B);
+  const m = cyl(r, r, len, mat, 8);
+  m.position.copy(A).add(B).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(new T.Vector3(0, 1, 0), B.clone().sub(A).normalize());
+  return m;
+}
+// Side profile (longitudinal z, height y) extruded across the car's width.
+function profile(pts, width, mat, bevel = 0.05, L = 0) {
+  const s = new T.Shape();
+  s.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) s.lineTo(pts[i][0], pts[i][1]);
+  s.closePath();
+  const g = new T.ExtrudeGeometry(s, {
+    depth: Math.max(0.01, width - bevel * 2), bevelEnabled: bevel > 0,
+    bevelSize: bevel, bevelThickness: bevel, bevelOffset: -bevel, bevelSegments: 4, curveSegments: 8,
+  });
+  g.rotateY(-Math.PI / 2);
+  g.translate((width - bevel * 2) / 2, 0, -L / 2);
+  g.computeVertexNormals();
+  return new T.Mesh(g, mat);
+}
+// Bottom edge of a body profile with arches cut around the wheels, front to rear.
+function underside(front, rear, wheels, r, clear, wheelY) {
+  const pts = [[front, clear]];
+  for (const wz of [...wheels].sort((a, b) => b - a)) {
+    const a0 = Math.asin((clear - wheelY) / r);
+    for (let i = 0; i <= 10; i++) {
+      const a = a0 + (Math.PI - 2 * a0) * (i / 10);
+      pts.push([wz + r * Math.cos(a), wheelY + r * Math.sin(a)]);
+    }
+  }
+  pts.push([rear, clear]);
+  return pts;
+}
+function wheel(r, w, x, z, opts = {}) {
+  const g = new T.Group();
+  const tyre = cyl(r, r, w, MAT.rubber(), 24);
+  tyre.rotation.z = Math.PI / 2;
+  g.add(tyre);
+  const rim = cyl(r * 0.62, r * 0.62, w * 1.02, opts.rim || MAT.rim(), 16);
+  rim.rotation.z = Math.PI / 2;
+  g.add(rim);
+  const hub = cyl(r * 0.2, r * 0.2, w * 1.06, MAT.trim(), 8);
+  hub.rotation.z = Math.PI / 2;
+  g.add(hub);
+  g.position.set(x, r, z);
+  return g;
+}
+function textTexture(w, h, draw) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new T.CanvasTexture(c);
+  t.colorSpace = T.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+function plate(text, x, y, z, w = 0.52, h = 0.13) {
+  const tex = textTexture(256, 64, (g, W, H) => {
+    g.fillStyle = '#f2f1e8'; g.fillRect(0, 0, W, H);
+    g.strokeStyle = '#1a1a1a'; g.lineWidth = 6; g.strokeRect(3, 3, W - 6, H - 6);
+    g.fillStyle = '#16204a'; g.font = 'bold 50px "DejaVu Sans Mono", monospace';
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, W / 2, H / 2 + 2);
+  });
+  const m = new T.Mesh(new T.PlaneGeometry(w, h), new T.MeshPhongMaterial({ map: tex, shininess: 40 }));
+  m.position.set(x, y, z);
+  m.rotation.y = Math.PI;
+  return m;
+}
+// Tyres sit slightly proud of the body so they read from behind, like arcade sprites.
+function addWheels(g, L, W, track, rearZ, frontZ, r = 0.3, w = 0.21) {
+  w *= 1.15;
+  track = W + 0.1 - w;
+  for (const z of [rearZ, frontZ]) for (const s of [-1, 1]) g.add(wheel(r, w, s * track / 2, z - L / 2));
+}
+function mirrors(g, mat, x, y, z) {
+  for (const s of [-1, 1]) g.add(box(0.1, 0.08, 0.14, mat, s * x, y, z));
+}
+
+// ------------------------------------------------------------------ cars
+// Every car faces +z; the camera sits behind it. Units are metres.
+const CARS = {
+  // Mk1 MR2 (AW11): sharp wedge, flat engine deck, sail panels, full-width lamp band.
+  aw11(color, brake, label = 'LEO') {
+    const g = new T.Group(), L = 3.95, W = 1.665, P = paint(color);
+    const body = [[0.0, 0.42], [0.01, 0.80], [0.16, 0.86], [1.05, 0.885], [2.6, 0.86], [3.72, 0.67], [3.95, 0.56], [3.93, 0.3],
+      ...underside(3.85, 0.05, [0.78, 3.12], 0.36, 0.2, 0.3).slice(1), [0.02, 0.22]];
+    g.add(profile(body, W, P, 0.1, L));
+    g.add(profile([[0.98, 0.86], [1.32, 1.21], [2.12, 1.24], [2.72, 0.86]], 1.34, MAT.glass(), 0.03, L));
+    g.add(profile([[1.28, 1.19], [1.31, 1.245], [2.12, 1.265], [2.16, 1.22]], 1.38, P, 0.02, L));
+    for (const s of [-1, 1]) {
+      const sail = profile([[0.5, 0.86], [1.31, 1.235], [1.45, 1.235], [1.1, 0.86]], 0.1, P, 0.015, L);
+      sail.position.x = s * 0.64;
+      g.add(sail);
+    }
+    const zr = -L / 2 - 0.006;
+    g.add(box(1.58, 0.15, 0.03, MAT.trim(), 0, 0.66, zr));
+    for (const s of [-1, 1]) {
+      g.add(box(0.46, 0.11, 0.03, MAT.lamp(brake), s * 0.55, 0.665, zr - 0.006));
+      g.add(box(0.13, 0.11, 0.03, MAT.amber(), s * 0.25, 0.665, zr - 0.006));
+    }
+    g.add(box(1.5, 0.045, 0.2, P, 0, 0.9, -L / 2 + 0.14));
+    g.add(box(1.64, 0.19, 0.16, MAT.trim(), 0, 0.34, -L / 2 + 0.05));
+    g.add(plate(label, 0, 0.5, zr - 0.01));
+    const ex = cyl(0.045, 0.045, 0.2, MAT.chrome(), 10); ex.rotation.x = Math.PI / 2; ex.position.set(0.48, 0.22, -L / 2 - 0.02); g.add(ex);
+    mirrors(g, P, 0.86, 1.0, 2.55 - L / 2);
+    addWheels(g, L, W, 1.5, 0.78, 3.12, 0.3, 0.22);
+    return g;
+  },
+  // Mk2 MR2 (SW20): smooth body, rear wing, round tail lamps, colour-coded bumper.
+  sw20(color, brake, label = 'LEO') {
+    const g = new T.Group(), L = 4.17, W = 1.695, P = paint(color);
+    const body = [[0.02, 0.4], [0.0, 0.64], [0.06, 0.84], [0.3, 0.9], [1.2, 0.93], [2.75, 0.87], [3.9, 0.66], [4.17, 0.5], [4.12, 0.3],
+      ...underside(4.05, 0.08, [0.85, 3.3], 0.37, 0.2, 0.31).slice(1), [0.03, 0.24]];
+    g.add(profile(body, W, P, 0.16, L));
+    g.add(profile([[1.06, 0.91], [1.58, 1.2], [2.38, 1.23], [3.0, 0.86]], 1.3, MAT.glass(), 0.05, L));
+    g.add(profile([[1.54, 1.18], [1.58, 1.235], [2.38, 1.255], [2.42, 1.2]], 1.34, P, 0.03, L));
+    for (const s of [-1, 1]) {
+      const sail = profile([[0.85, 0.91], [1.58, 1.215], [1.7, 1.215], [1.3, 0.91]], 0.1, P, 0.02, L);
+      sail.position.x = s * 0.63;
+      g.add(sail);
+    }
+    const zr = -L / 2 - 0.004;
+    for (const s of [-1, 1]) {
+      g.add(box(0.5, 0.17, 0.03, MAT.trim(), s * 0.53, 0.68, zr));
+      for (const x of [0.4, 0.62]) {
+        const lamp = cyl(0.075, 0.075, 0.04, MAT.lamp(brake), 20);
+        lamp.rotation.x = Math.PI / 2; lamp.position.set(s * x, 0.68, zr - 0.01);
+        g.add(lamp);
+      }
+    }
+    g.add(plate(label, 0, 0.52, zr - 0.005));
+    g.add(box(1.5, 0.1, 0.1, MAT.trim(), 0, 0.26, -L / 2 + 0.06));
+    g.add(box(1.46, 0.04, 0.3, P, 0, 1.0, -L / 2 + 0.24));
+    for (const s of [-1, 1]) g.add(box(0.05, 0.11, 0.12, MAT.trim(), s * 0.56, 0.93, -L / 2 + 0.26));
+    for (const s of [-1, 1]) { const ex = cyl(0.045, 0.045, 0.2, MAT.chrome(), 10); ex.rotation.x = Math.PI / 2; ex.position.set(s * 0.5, 0.24, -L / 2 - 0.02); g.add(ex); }
+    mirrors(g, P, 0.88, 1.0, 2.75 - L / 2);
+    addWheels(g, L, W, 1.52, 0.85, 3.3, 0.31, 0.23);
+    return g;
+  },
+  // Mk3 roadster (ZZW30): open cockpit, twin hoops behind the headrests, small round lamps.
+  w30(color, brake, label = 'LEO') {
+    const g = new T.Group(), L = 3.9, W = 1.695, P = paint(color);
+    const body = [[0.04, 0.38], [0.0, 0.62], [0.1, 0.84], [0.62, 0.9], [1.3, 0.92], [2.5, 0.88], [3.72, 0.63], [3.9, 0.46], [3.86, 0.3],
+      ...underside(3.8, 0.08, [0.8, 3.15], 0.37, 0.2, 0.31).slice(1), [0.04, 0.24]];
+    g.add(profile(body, W, P, 0.16, L));
+    g.add(box(1.3, 0.08, 1.15, phong(0x222226, 10), 0, 0.92, 2.05 - L / 2));
+    for (const s of [-1, 1]) {
+      g.add(box(0.36, 0.34, 0.14, phong(0x1d1d22, 15), s * 0.32, 1.1, 1.52 - L / 2));
+      g.add(tube([s * 0.5, 0.92, 1.42 - L / 2], [s * 0.5, 1.22, 1.42 - L / 2], 0.025, MAT.chrome()));
+      g.add(tube([s * 0.14, 0.92, 1.42 - L / 2], [s * 0.14, 1.22, 1.42 - L / 2], 0.025, MAT.chrome()));
+      g.add(tube([s * 0.14, 1.22, 1.42 - L / 2], [s * 0.5, 1.22, 1.42 - L / 2], 0.025, MAT.chrome()));
+    }
+    const ws = box(1.36, 0.36, 0.03, MAT.glass(), 0, 1.06, 2.62 - L / 2);
+    ws.rotation.x = -0.75; g.add(ws);
+    const zr = -L / 2 - 0.004;
+    for (const s of [-1, 1]) {
+      g.add(box(0.36, 0.17, 0.03, MAT.trim(), s * 0.6, 0.72, zr + 0.02));
+      for (const x of [0.5, 0.68]) {
+        const lamp = cyl(0.07, 0.07, 0.04, MAT.lamp(brake), 20);
+        lamp.rotation.x = Math.PI / 2; lamp.position.set(s * x, 0.72, zr);
+        g.add(lamp);
+      }
+    }
+    g.add(plate(label, 0, 0.52, zr));
+    g.add(box(1.4, 0.09, 0.1, MAT.trim(), 0, 0.27, -L / 2 + 0.07));
+    const ex = cyl(0.05, 0.05, 0.2, MAT.chrome(), 10); ex.rotation.x = Math.PI / 2; ex.position.set(0, 0.25, -L / 2 - 0.02); g.add(ex);
+    mirrors(g, P, 0.88, 0.98, 2.5 - L / 2);
+    addWheels(g, L, W, 1.52, 0.8, 3.15, 0.31, 0.23);
+    return g;
+  },
+  // Rivals: invented generic machines.
+  gt(color, brake) {
+    const g = new T.Group(), L = 4.4, W = 1.95, P = paint(color);
+    const body = [[0.0, 0.34], [0.0, 0.7], [0.25, 0.8], [1.4, 0.84], [2.95, 0.76], [4.2, 0.48], [4.4, 0.34],
+      ...underside(4.35, 0.05, [0.9, 3.5], 0.4, 0.14, 0.33).slice(1), [0.02, 0.16]];
+    g.add(profile(body, W, P, 0.08, L));
+    g.add(profile([[1.4, 0.82], [1.85, 1.07], [2.55, 1.09], [3.1, 0.78]], 1.32, MAT.glass(), 0.04, L));
+    g.add(profile([[1.82, 1.05], [1.86, 1.1], [2.55, 1.115], [2.6, 1.06]], 1.36, P, 0.02, L));
+    const zr = -L / 2 - 0.004;
+    g.add(box(1.85, 0.12, 0.03, MAT.trim(), 0, 0.62, zr));
+    for (const s of [-1, 1]) g.add(box(0.62, 0.05, 0.03, MAT.lamp(brake, 0xd01818), s * 0.58, 0.63, zr - 0.006));
+    g.add(box(1.7, 0.16, 0.2, MAT.trim(), 0, 0.24, -L / 2 + 0.08));
+    for (let i = -3; i <= 3; i++) g.add(box(0.02, 0.14, 0.24, MAT.trim(), i * 0.2, 0.24, -L / 2 + 0.06));
+    g.add(box(1.92, 0.05, 0.36, P, 0, 1.12, -L / 2 + 0.3));
+    for (const s of [-1, 1]) {
+      g.add(box(0.03, 0.26, 0.42, P, s * 0.96, 1.04, -L / 2 + 0.3));
+      g.add(box(0.05, 0.3, 0.1, MAT.trim(), s * 0.5, 0.94, -L / 2 + 0.36));
+    }
+    for (const s of [-1, 1]) { const ex = cyl(0.06, 0.06, 0.2, MAT.chrome(), 12); ex.rotation.x = Math.PI / 2; ex.position.set(s * 0.12, 0.3, -L / 2 - 0.02); g.add(ex); }
+    addWheels(g, L, W, 1.72, 0.9, 3.5, 0.33, 0.3);
+    return g;
+  },
+  muscle(color, brake) {
+    const g = new T.Group(), L = 4.7, W = 1.86, P = paint(color), S = phong(0xf0efe6, 70, 0x777777);
+    const body = [[0.0, 0.36], [0.0, 0.84], [0.1, 0.9], [1.3, 0.92], [3.0, 0.93], [4.6, 0.86], [4.7, 0.5], [4.66, 0.32],
+      ...underside(4.55, 0.05, [0.95, 3.75], 0.4, 0.2, 0.34).slice(1), [0.02, 0.22]];
+    g.add(profile(body, W, P, 0.06, L));
+    g.add(profile([[1.35, 0.92], [1.85, 1.27], [2.85, 1.29], [3.35, 0.92]], 1.42, MAT.glass(), 0.03, L));
+    g.add(profile([[1.82, 1.25], [1.85, 1.3], [2.85, 1.32], [2.9, 1.27]], 1.46, P, 0.02, L));
+    for (const s of [-1, 1]) {
+      const stripe = profile([[0.0, 0.84], [0.1, 0.905], [1.3, 0.925], [1.86, 1.305], [2.86, 1.325], [3.36, 0.935], [4.6, 0.865], [4.6, 0.85], [0.0, 0.83]], 0.14, S, 0.004, L);
+      stripe.position.x = s * 0.12; g.add(stripe);
+    }
+    const zr = -L / 2 - 0.004;
+    g.add(box(1.7, 0.16, 0.03, MAT.trim(), 0, 0.66, zr));
+    for (let i = 0; i < 6; i++) g.add(box(0.24, 0.1, 0.03, MAT.lamp(brake), -0.69 + i * 0.276, 0.66, zr - 0.006));
+    g.add(box(1.9, 0.12, 0.14, MAT.chrome(), 0, 0.36, -L / 2 + 0.02));
+    g.add(box(1.84, 0.05, 0.14, P, 0, 0.94, -L / 2 + 0.07));
+    g.add(plate('V8', 0, 0.5, zr - 0.06, 0.4, 0.12));
+    for (const s of [-1, 1]) { const ex = cyl(0.06, 0.06, 0.2, MAT.chrome(), 12); ex.rotation.x = Math.PI / 2; ex.position.set(s * 0.62, 0.22, -L / 2 - 0.02); g.add(ex); }
+    addWheels(g, L, W, 1.64, 0.95, 3.75, 0.34, 0.3);
+    return g;
+  },
+  hatch(color, brake) {
+    const g = new T.Group(), L = 3.9, W = 1.7, P = paint(color);
+    const body = [[0.0, 0.36], [0.0, 0.98], [0.08, 1.0], [2.8, 0.98], [3.75, 0.82], [3.9, 0.6], [3.88, 0.32],
+      ...underside(3.8, 0.05, [0.7, 3.2], 0.36, 0.2, 0.3).slice(1), [0.02, 0.22]];
+    g.add(profile(body, W, P, 0.07, L));
+    g.add(profile([[0.03, 0.98], [0.14, 1.41], [2.25, 1.44], [2.85, 0.98]], 1.5, MAT.glass(), 0.04, L));
+    g.add(profile([[0.12, 1.39], [0.15, 1.45], [2.25, 1.475], [2.3, 1.42]], 1.54, P, 0.03, L));
+    for (const s of [-1, 1]) g.add(box(0.1, 0.44, 0.1, P, s * 0.74, 1.2, 0.1 - L / 2));
+    const zr = -L / 2 - 0.004;
+    for (const s of [-1, 1]) { g.add(box(0.14, 0.34, 0.03, MAT.lamp(brake), s * 0.73, 0.8, zr)); g.add(box(0.14, 0.08, 0.031, MAT.amber(), s * 0.73, 0.66, zr)); }
+    g.add(box(1.72, 0.2, 0.14, MAT.trim(), 0, 0.36, -L / 2 + 0.04));
+    g.add(plate('RVL', 0, 0.62, zr));
+    addWheels(g, L, W, 1.54, 0.7, 3.2, 0.3, 0.22);
+    return g;
+  },
+  pickup(color, brake) {
+    const g = new T.Group(), L = 4.9, W = 1.86, P = paint(color);
+    const body = [[0.0, 0.5], [0.0, 1.02], [4.0, 1.02], [4.75, 0.92], [4.9, 0.66], [4.86, 0.42],
+      ...underside(4.75, 0.05, [1.0, 3.9], 0.44, 0.3, 0.38).slice(1), [0.02, 0.32]];
+    g.add(profile(body, W, P, 0.05, L));
+    g.add(box(W - 0.24, 0.05, 1.9, MAT.trim(), 0, 1.03, 1.0 - L / 2));
+    g.add(profile([[2.05, 1.0], [2.12, 1.76], [3.2, 1.8], [3.7, 1.0]], 1.76, P, 0.05, L));
+    g.add(box(1.3, 0.38, 0.03, MAT.glass(), 0, 1.5, 2.05 - L / 2));
+    const zr = -L / 2 - 0.004;
+    for (const s of [-1, 1]) g.add(box(0.12, 0.34, 0.03, MAT.lamp(brake), s * 0.85, 0.82, zr));
+    g.add(box(1.92, 0.15, 0.16, MAT.chrome(), 0, 0.42, -L / 2 + 0.02));
+    g.add(plate('TOW', 0, 0.62, zr));
+    for (const s of [-1, 1]) g.add(box(0.06, 0.5, 2.0, P, s * 0.9, 1.27, 1.0 - L / 2));
+    addWheels(g, L, W, 1.66, 1.0, 3.9, 0.38, 0.28);
+    return g;
+  },
+  buggy(color, brake) {
+    const g = new T.Group(), L = 3.4, P = paint(color), M = phong(0x45474f, 60, 0x999999);
+    g.add(box(1.2, 0.12, 2.9, MAT.trim(), 0, 0.35, 0.1));
+    g.add(box(0.9, 0.42, 0.75, M, 0, 0.68, -1.15));
+    for (let i = 0; i < 5; i++) g.add(box(0.92, 0.03, 0.04, MAT.trim(), 0, 0.72 + i * 0.07, -1.53));
+    for (const s of [-1, 1]) g.add(tube([s * 0.25, 0.8, -1.4], [s * 0.3, 1.25, -1.62], 0.05, MAT.chrome()));
+    for (const s of [-1, 1]) {
+      g.add(box(0.12, 0.3, 1.5, P, s * 0.58, 0.55, 0.3));
+      g.add(tube([s * 0.55, 0.42, -0.6], [s * 0.5, 1.55, -0.45], 0.045, P));
+      g.add(tube([s * 0.5, 1.55, -0.45], [s * 0.45, 1.5, 0.45], 0.045, P));
+      g.add(tube([s * 0.45, 1.5, 0.45], [s * 0.55, 0.42, 1.0], 0.045, P));
+      g.add(tube([s * 0.5, 1.55, -0.45], [s * 0.55, 0.62, -1.5], 0.04, P));
+    }
+    g.add(tube([-0.5, 1.55, -0.45], [0.5, 1.55, -0.45], 0.045, P));
+    g.add(tube([-0.45, 1.5, 0.45], [0.45, 1.5, 0.45], 0.045, P));
+    g.add(box(0.5, 0.5, 0.4, phong(0x2a2a30, 20), 0, 0.68, -0.2));
+    const helmet = new T.Mesh(new T.SphereGeometry(0.17, 20, 14), phong(0xf2f2ee, 100, 0xffffff));
+    helmet.position.set(0, 1.12, -0.05); g.add(helmet);
+    g.add(box(0.36, 0.06, 0.02, P, 0, 1.2, -0.21));
+    for (const s of [-1, 1]) {
+      g.add(box(0.12, 0.1, 0.03, MAT.lamp(brake), s * 0.42, 0.62, -1.54));
+      g.add(box(0.4, 0.45, 0.04, MAT.trim(), s * 0.82, 0.42, -1.56));
+    }
+    for (const s of [-1, 1]) {
+      g.add(wheel(0.44, 0.38, s * 0.82, -1.0, { rim: phong(color, 80, 0x999999) }));
+      g.add(wheel(0.34, 0.26, s * 0.78, 1.25, { rim: phong(color, 80, 0x999999) }));
+    }
+    return g;
+  },
+};
+
+// ------------------------------------------------------------------ scenery
+function jitterGeometry(geo, r, amount, scale = [1, 1, 1]) {
+  const p = geo.attributes.position, seen = new Map();
+  for (let i = 0; i < p.count; i++) {
+    const key = [p.getX(i), p.getY(i), p.getZ(i)].map(v => v.toFixed(3)).join();
+    let d = seen.get(key);
+    if (!d) { d = 1 + (r() - 0.5) * amount; seen.set(key, d); }
+    p.setXYZ(i, p.getX(i) * d * scale[0], p.getY(i) * d * scale[1], p.getZ(i) * d * scale[2]);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function leafTexture() {
+  return textTexture(64, 256, (g, W, H) => {
+    g.clearRect(0, 0, W, H);
+    g.strokeStyle = '#6a5a20'; g.lineWidth = 3;
+    g.beginPath(); g.moveTo(W / 2, 0); g.lineTo(W / 2, H); g.stroke();
+    for (let y = 6; y < H - 4; y += 7) {
+      const len = (W / 2 - 3) * Math.sin((y / H) * Math.PI) + 4;
+      for (const s of [-1, 1]) {
+        g.strokeStyle = (y / 7) % 2 ? '#3f9a3c' : '#2e7f30'; g.lineWidth = 5;
+        g.beginPath(); g.moveTo(W / 2, y); g.lineTo(W / 2 + s * len, y + 10); g.stroke();
+      }
+    }
+  });
+}
+
+const SCENERY = {
+  palm(seed) {
+    const r = seeded(seed), g = new T.Group(), segs = 14, H = 6.5 + r() * 1.5, lean = (r() - 0.5) * 1.6;
+    let top = new T.Vector3();
+    for (let i = 0; i < segs; i++) {
+      const t0 = i / segs, t1 = (i + 1) / segs;
+      const a = [lean * t0 * t0, H * t0, 0], b = [lean * t1 * t1, H * t1, 0];
+      g.add(tube(a, b, 0.2 - 0.07 * t0, phong(i % 2 ? 0x8d6136 : 0x6f4a26, 8)));
+      top.set(...b);
+    }
+    const leaf = new T.MeshPhongMaterial({ map: leafTexture(), alphaTest: 0.5, side: T.DoubleSide, shininess: 10 });
+    for (let k = 0; k < 13; k++) {
+      const len = 2.8 + r() * 0.9, geo = new T.PlaneGeometry(1.15, len, 1, 12);
+      const p = geo.attributes.position;
+      for (let i = 0; i < p.count; i++) {
+        const y = p.getY(i) + len / 2;              // 0 at the stem
+        p.setXYZ(i, p.getX(i) * (1 - 0.15 * y / len), y, 0.5 * y - 0.32 * y * y);    // arch then droop
+      }
+      geo.computeVertexNormals();
+      const m = new T.Mesh(geo, leaf);
+      m.position.copy(top);
+      m.rotation.order = 'YXZ';
+      m.rotation.y = (k / 13) * Math.PI * 2 + r() * 0.3;
+      m.rotation.x = -0.9 - r() * 0.5;
+      g.add(m);
+    }
+    for (let k = 0; k < 4; k++) {
+      const c = new T.Mesh(new T.SphereGeometry(0.13, 10, 8), phong(0x5a3b18, 20));
+      c.position.set(top.x + Math.cos(k * 1.7) * 0.18, top.y - 0.15, Math.sin(k * 1.7) * 0.18);
+      g.add(c);
+    }
+    return g;
+  },
+  pine(seed, snow) {
+    const r = seeded(seed), g = new T.Group(), tiers = 5, H = 7 + r() * 2;
+    g.add(at(cyl(0.18, 0.24, 1.4, phong(0x4a3020, 5), 8), 0, 0.7, 0));
+    for (let k = 0; k < tiers; k++) {
+      const y = 1.0 + k * (H - 2) / tiers, rad = 2.2 - k * 0.38 + r() * 0.2, h = 2.6 - k * 0.15;
+      const geo = jitterGeometry(new T.ConeGeometry(rad, h, 9, 3), r, 0.18).toNonIndexed();
+      const pos = geo.attributes.position, cols = [];
+      for (let i = 0; i < pos.count; i += 3) {
+        const yAvg = (pos.getY(i) + pos.getY(i + 1) + pos.getY(i + 2)) / 3;
+        const c = snow && yAvg < -h * 0.28 && r() < 0.7 ? [0.85, 0.9, 1] : r() < 0.5 ? [0.016, 0.075, 0.03] : [0.025, 0.11, 0.045];
+        for (let j = 0; j < 3; j++) cols.push(...c);
+      }
+      geo.setAttribute('color', new T.Float32BufferAttribute(cols, 3));
+      geo.computeVertexNormals();
+      const m = new T.Mesh(geo, phong(0xffffff, 8, 0x111111, { flatShading: true, vertexColors: true }));
+      m.position.y = y + h / 2; m.rotation.y = r() * 3;
+      g.add(m);
+      if (false) {
+        const sgeo = jitterGeometry(new T.ConeGeometry(rad * 0.62, h * 0.42, 9, 1), r, 0.15);
+        const s = new T.Mesh(sgeo, phong(0xf2f6ff, 20, 0x334455, { flatShading: true }));
+        s.position.y = y + h - h * 0.21 + 0.02; s.rotation.y = m.rotation.y;
+        g.add(s);
+      }
+    }
+    return g;
+  },
+  cactus(seed) {
+    const r = seeded(seed), g = new T.Group(), M = phong(0x2f8a3a, 12, 0x224422, { flatShading: true });
+    const part = (rad, len, pos, rotZ = 0) => {
+      const m = new T.Mesh(new T.CapsuleGeometry(rad, len, 4, 10), M);
+      m.position.set(...pos); m.rotation.z = rotZ; g.add(m);
+    };
+    const H = 4 + r() * 1.5;
+    part(0.32, H, [0, H / 2 + 0.3, 0]);
+    part(0.22, 0.8, [-0.55, 1.6, 0], Math.PI / 2); part(0.22, 1.3, [-0.95, 2.3, 0]);
+    part(0.22, 0.7, [0.5, 2.3, 0], Math.PI / 2); part(0.22, 1.1, [0.85, 2.9, 0]);
+    return g;
+  },
+  boulder(seed, color) {
+    const r = seeded(seed);
+    const geo = jitterGeometry(new T.IcosahedronGeometry(1.2, 1), r, 0.45, [1.4, 0.85, 1.1]);
+    const m = new T.Mesh(geo, phong(new T.Color(color), 6, 0x111111, { flatShading: true }));
+    m.position.y = 0.75;
+    const g = new T.Group(); g.add(m);
+    return g;
+  },
+  mesa(seed, color) {
+    const r = seeded(seed), geo = new T.CylinderGeometry(3.2, 4.4, 9, 10, 8);
+    const p = geo.attributes.position, cols = [], base = new T.Color(color);
+    for (let i = 0; i < p.count; i++) {
+      const y = p.getY(i), k = 1 + (r() - 0.5) * 0.25;
+      if (Math.abs(y) < 4.49) p.setXYZ(i, p.getX(i) * k, y, p.getZ(i) * k);
+      const band = Math.floor((y + 4.5) / 1.1) % 2;
+      const c = base.clone().multiplyScalar(band ? 0.85 : 1.05);
+      cols.push(c.r, c.g, c.b);
+    }
+    geo.setAttribute('color', new T.Float32BufferAttribute(cols, 3));
+    geo.computeVertexNormals();
+    const m = new T.Mesh(geo, phong(0xffffff, 5, 0x111111, { vertexColors: true, flatShading: true }));
+    m.position.y = 4.5;
+    const g = new T.Group(); g.add(m);
+    return g;
+  },
+  // Dark rock with some faces glowing like cooling lava.
+  ember(seed) {
+    const r = seeded(seed);
+    const geo = jitterGeometry(new T.IcosahedronGeometry(1.2, 1), r, 0.45, [1.4, 0.85, 1.1]).toNonIndexed();
+    const p = geo.attributes.position, hot = [];
+    for (let i = 0; i < p.count; i += 3) if (r() < 0.22) for (let j = 0; j < 3; j++) hot.push(p.getX(i + j) * 1.01, p.getY(i + j) * 1.01, p.getZ(i + j) * 1.01);
+    const g = new T.Group();
+    const rock = new T.Mesh(geo, phong(0x2c2426, 6, 0x111111, { flatShading: true }));
+    const glowGeo = new T.BufferGeometry();
+    glowGeo.setAttribute('position', new T.Float32BufferAttribute(hot, 3));
+    const glow = new T.Mesh(glowGeo, new T.MeshBasicMaterial({ color: 0xff6a1a }));
+    for (const m of [rock, glow]) { m.position.y = 0.75; g.add(m); }
+    return g;
+  },
+  building(seed, color) {
+    const r = seeded(seed), w = 9 + Math.floor(r() * 4) * 3, d = 9, h = 26 + Math.floor(r() * 6) * 6;
+    const cols = Math.round(w / 1.6), rows = Math.round(h / 2.2);
+    const tex = textTexture(cols * 8, rows * 8, (g2, W, H) => {
+      g2.fillStyle = color; g2.fillRect(0, 0, W, H);
+      for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+        const on = r() < 0.55;
+        g2.fillStyle = on ? (r() < 0.8 ? '#ffd27a' : '#9fe8ff') : '#1a1630';
+        g2.fillRect(x * 8 + 2, y * 8 + 2, 4, 5);
+      }
+    });
+    const glow = tex.clone(); glow.needsUpdate = true;
+    const mat = new T.MeshPhongMaterial({ map: tex, emissiveMap: glow, emissive: 0xffffff, emissiveIntensity: 0.8, shininess: 20 });
+    const g = new T.Group();
+    g.add(box(w, h, d, mat, 0, h / 2, 0));
+    g.add(box(w + 0.3, 0.5, d + 0.3, phong(0x2a2440, 10), 0, h + 0.25, 0));
+    g.add(tube([w * 0.2, h, 0], [w * 0.2, h + 4, 0], 0.08, phong(0x888888)));
+    const beacon = new T.Mesh(new T.SphereGeometry(0.25, 8, 6), phong(0xff3030, 10, 0x000000, { emissive: 0xff2020 }));
+    beacon.position.set(w * 0.2, h + 4, 0); g.add(beacon);
+    return g;
+  },
+  lamp(lit) {
+    const g = new T.Group(), M = phong(0x5a6070, 60, 0x888888);
+    g.add(tube([0, 0, 0], [0, 7, 0], 0.09, M));
+    g.add(tube([0, 7, 0], [1.4, 7.3, 0], 0.07, M));
+    g.add(box(0.7, 0.18, 0.35, M, 1.6, 7.25, 0));
+    g.add(box(0.6, 0.06, 0.3, phong(lit ? 0xfff4c0 : 0xcccccc, 10, 0x000000, { emissive: lit ? 0xfff0b0 : 0x000000 }), 1.6, 7.14, 0));
+    return g;
+  },
+  billboard(text, bg, fg) {
+    const g = new T.Group(), w = Math.max(5.5, text.length * 0.62 + 1.4), h = 2.6;
+    const tex = textTexture(Math.round(w * 64), Math.round(h * 64), (c, W, H) => {
+      c.fillStyle = bg; c.fillRect(0, 0, W, H);
+      c.fillStyle = 'rgba(255,255,255,0.18)'; c.fillRect(0, 0, W, H * 0.12);
+      c.font = `bold 100px "Inter Display", "DejaVu Sans", sans-serif`;
+      const size = Math.min(H * 0.5, 100 * (W * 0.86) / c.measureText(text).width);
+      c.font = `bold ${Math.round(size)}px "Inter Display", "DejaVu Sans", sans-serif`;
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.lineWidth = 10; c.strokeStyle = 'rgba(0,0,0,0.35)'; c.strokeText(text, W / 2, H / 2 + 4);
+      c.fillStyle = fg; c.fillText(text, W / 2, H / 2 + 4);
+    });
+    const face = new T.MeshPhongMaterial({ map: tex, shininess: 20 });
+    const frame = phong(0x1c1c22, 30);
+    const board = new T.Mesh(new T.BoxGeometry(w, h, 0.15), [frame, frame, frame, frame, frame, face]);
+    board.position.set(0, 3.2, 0);
+    g.add(board);
+    for (const s of [-1, 1]) g.add(box(0.18, 2.2, 0.18, phong(0x5a5a62, 40), s * w * 0.32, 1.1, 0.1));
+    return g;
+  },
+  chevron(dir) {
+    const g = new T.Group();
+    const tex = textTexture(160, 110, (c, W, H) => {
+      c.fillStyle = '#f5c518'; c.fillRect(0, 0, W, H);
+      c.fillStyle = '#141414';
+      for (const off of [22, 72]) {
+        c.beginPath();
+        const pts = dir > 0 ? [[off, 15], [off + 28, 15], [off + 58, 55], [off + 28, 95], [off, 95], [off + 30, 55]]
+          : [[W - off, 15], [W - off - 28, 15], [W - off - 58, 55], [W - off - 28, 95], [W - off, 95], [W - off - 30, 55]];
+        c.moveTo(...pts[0]); for (const p of pts.slice(1)) c.lineTo(...p); c.closePath(); c.fill();
+      }
+      c.strokeStyle = '#141414'; c.lineWidth = 8; c.strokeRect(4, 4, W - 8, H - 8);
+    });
+    const face = new T.MeshPhongMaterial({ map: tex, shininess: 30 }), back = phong(0x2a2a2e);
+    const board = new T.Mesh(new T.BoxGeometry(1.6, 1.1, 0.06), [back, back, back, back, back, face]);
+    board.position.y = 1.5;
+    g.add(board);
+    g.add(box(0.1, 1.0, 0.1, phong(0x6a6a72, 40), 0, 0.5, 0.06));
+    return g;
+  },
+  cone() {
+    const g = new T.Group();
+    g.add(at(cyl(0.04, 0.2, 0.7, phong(0xff6a13, 40), 16), 0, 0.38, 0));
+    for (const y of [0.3, 0.5]) g.add(at(cyl(0.18 - y * 0.2, 0.19 - y * 0.2, 0.08, phong(0xf4f4f4, 40), 16), 0, y, 0));
+    g.add(box(0.5, 0.05, 0.5, phong(0x222222), 0, 0.025, 0));
+    return g;
+  },
+  grandstand(seed) {
+    const r = seeded(seed), g = new T.Group(), w = 18, rows = 6;
+    const crowd = textTexture(512, 32, (c, W, H) => {
+      c.fillStyle = '#3a3e48'; c.fillRect(0, 0, W, H);
+      for (let x = 2; x < W; x += 6) {
+        c.fillStyle = ['#f4d35e', '#ee964b', '#f95738', '#4ea8de', '#f4f4f4', '#7bd389', '#c46bff'][Math.floor(r() * 7)];
+        c.fillRect(x, 10 + r() * 4, 4, 18);
+        c.fillStyle = ['#e8c39e', '#a8754f', '#5a3a22', '#f0d0b0'][Math.floor(r() * 4)];
+        c.fillRect(x, 4 + r() * 3, 4, 6);
+      }
+    });
+    const crowdMat = new T.MeshPhongMaterial({ map: crowd, shininess: 5 }), step = phong(0x8a8f99, 10);
+    for (let i = 0; i < rows; i++) {
+      const y = 0.5 + i * 0.7, z = i * 0.9;
+      g.add(box(w, 0.25, 0.9, step, 0, y, z));
+      const face = new T.Mesh(new T.PlaneGeometry(w, 0.7), crowdMat);
+      face.position.set(0, y + 0.45, z - 0.2); face.rotation.y = Math.PI;
+      g.add(face);
+    }
+    g.add(box(w + 1, 0.3, 6.5, phong(0xc23b3b, 30), 0, 6.2, 2.6));
+    for (const x of [-w / 2, -w / 6, w / 6, w / 2]) g.add(box(0.2, 6, 0.2, phong(0x777777), x, 3, 5.5));
+    return g;
+  },
+  gantry() {
+    const g = new T.Group(), span = 22;
+    const tex = textTexture(1408, 128, (c, W, H) => {
+      c.fillStyle = '#16161a'; c.fillRect(0, 0, W, H);
+      for (let x = 0; x < W; x += 16) for (const y of [0, H - 16]) {
+        c.fillStyle = '#f4f4f4'; c.fillRect(x + ((x / 16) % 2 ? 8 : 0), y, 8, 8); c.fillRect(x + ((x / 16) % 2 ? 0 : 8), y + 8, 8, 8);
+      }
+      c.font = 'bold 70px "Inter Display", "DejaVu Sans", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillStyle = '#ffd23f'; c.fillText('MIDSHIP  DRIFT', W / 2, H / 2 + 3);
+    });
+    const face = new T.MeshPhongMaterial({ map: tex, shininess: 20 }), back = phong(0x16161a);
+    const banner = new T.Mesh(new T.BoxGeometry(span, 2, 0.3), [back, back, back, back, back, face]);
+    banner.position.y = 7; g.add(banner);
+    for (const s of [-1, 1]) g.add(box(0.8, 8, 0.8, phong(0xd8dbe2, 40), s * (span / 2 - 0.4), 4, 0));
+    return g;
+  },
+};
+
+// ------------------------------------------------------------------ render
+// spec: { kind: 'car'|'scenery', model, args, yaw, elev, pxPerM, ss }
+// Returns a PNG data URL plus where the ground point under the object lands.
+window.renderSprite = function (spec) {
+  const scene = new T.Scene();
+  scene.add(new T.HemisphereLight(0xdfe8ff, 0x5a5048, 0.85));
+  const sun = new T.DirectionalLight(0xfff4e6, 1.35);
+  sun.position.set(-4, 7, -6);
+  scene.add(sun);
+  const rim = new T.DirectionalLight(0xa8bcff, 0.35);
+  rim.position.set(5, 3, 6);
+  scene.add(rim);
+
+  const obj = spec.kind === 'car' ? CARS[spec.model](...spec.args) : SCENERY[spec.model](...spec.args);
+  obj.rotation.y = (spec.yaw || 0) * Math.PI / 180;
+  scene.add(obj);
+  obj.updateMatrixWorld(true);
+
+  const e = (spec.elev || 0) * Math.PI / 180, D = 60;
+  const cam = new T.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
+  cam.position.set(0, Math.sin(e) * D, -Math.cos(e) * D);
+  cam.lookAt(0, 0, 0);
+  cam.updateMatrixWorld(true);
+
+  // Fit the frustum to the object's projected extent.
+  const view = new T.Matrix4().copy(cam.matrixWorldInverse);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  const v = new T.Vector3();
+  obj.traverse(m => {
+    if (!m.isMesh) return;
+    const p = m.geometry.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i).applyMatrix4(m.matrixWorld).applyMatrix4(view);
+      minX = Math.min(minX, v.x); maxX = Math.max(maxX, v.x); minY = Math.min(minY, v.y); maxY = Math.max(maxY, v.y);
+    }
+  });
+  const pad = 0.15;
+  minX -= pad; maxX += pad; minY -= pad; maxY += pad;
+  cam.left = minX; cam.right = maxX; cam.top = maxY; cam.bottom = minY;
+  cam.updateProjectionMatrix();
+  const k = spec.pxPerM * (spec.ss || 4);
+  const W = Math.ceil((maxX - minX) * k), H = Math.ceil((maxY - minY) * k);
+  renderer.setSize(W, H, false);
+  renderer.render(scene, cam);
+
+  const g = new T.Vector3(0, 0, 0).applyMatrix4(view);
+  const anchor = [(g.x - minX) * k, (maxY - g.y) * k];
+  return { url: renderer.domElement.toDataURL('image/png'), w: W, h: H, anchor };
+};
+window.studioReady = true;
+</script>
+</body>
+</html>

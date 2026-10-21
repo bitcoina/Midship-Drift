@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Midship Drift</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Chakra+Petch:wght@500;700&display=swap">
+<style>
+  /* Arcade cabinet: one dark look by design. Panels float over the live attract-mode race. */
+  :root {
+    --night: #0b0a1a;
+    --panel: rgba(14, 12, 34, 0.88);
+    --ink: #f4f1ff;
+    --dim: #a9a6c8;
+    --sun: #ffd23f;
+    --hot: #ff3f6c;
+    --ice: #7fe3ff;
+    --px: "Press Start 2P", ui-monospace, Menlo, Consolas, monospace;
+    --body: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; background: var(--night); color: var(--ink); overflow: hidden; }
+  body { font-family: var(--body); -webkit-user-select: none; user-select: none; touch-action: none; }
+  #screen { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+  #ui {
+    position: fixed; inset: 0; display: grid; place-items: center; overflow-y: auto;
+    padding-block: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-bottom, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .panel {
+    width: min(560px, 100%); background: var(--panel); border: 3px solid var(--ink);
+    box-shadow: 6px 6px 0 var(--hot), 0 0 0 1px #000; padding: 20px; display: grid; gap: 14px;
+  }
+  #title { background: transparent; border: 0; box-shadow: none; text-align: center; justify-items: center; gap: 18px; }
+  .logo {
+    margin: 0; font-family: var(--px); font-weight: 400; line-height: 1.05; letter-spacing: 0.02em;
+    font-size: clamp(30px, 8vw, 64px); color: var(--sun); display: grid; gap: 6px;
+    text-shadow: 3px 3px 0 var(--hot), 6px 6px 0 #000;
+    transform: skewX(-8deg);
+  }
+  .logo span { color: var(--ice); font-size: 0.72em; letter-spacing: 0.3em; text-shadow: 3px 3px 0 #2b2b8a, 6px 6px 0 #000; }
+  .tag { margin: 0; font-size: 15px; color: var(--ink); text-shadow: 2px 2px 0 #000; }
+  .hint { margin: 0; font-size: 13px; color: var(--dim); text-shadow: 1px 1px 0 #000; }
+  h2 { margin: 0; font-family: var(--px); font-weight: 400; font-size: 16px; line-height: 1.4; color: var(--sun); text-wrap: balance; }
+  .sub { margin: 0; color: var(--dim); font-size: 15px; }
+  .menu { display: grid; gap: 10px; width: min(340px, 100%); }
+  #title .menu { width: min(300px, 100%); }
+  button {
+    font: inherit; color: var(--ink); background: #1d1a44; border: 2px solid var(--ink);
+    padding: 12px 14px; cursor: pointer; text-align: left; box-shadow: 3px 3px 0 #000;
+  }
+  .menu > button { font-family: var(--px); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+  button:hover { background: #2a2660; }
+  button:focus-visible { outline: 3px solid var(--sun); outline-offset: 2px; background: #2a2660; }
+  button:focus-visible::before, .menu > button:hover::before { content: "\25B6\00a0"; color: var(--sun); }
+  .course:hover::before, .course:focus-visible::before { content: none !important; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  #course-list { width: 100%; }
+  .course { display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 2px; align-items: baseline; }
+  .c-num { grid-row: span 3; font-family: var(--px); color: var(--sun); font-size: 14px; }
+  .c-name { font-weight: 700; font-size: 17px; }
+  .c-blurb { color: var(--dim); font-size: 14px; }
+  .c-best { color: var(--ice); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .garage-stage { display: grid; place-items: center; background: linear-gradient(#2a2a5a, #12112a 60%, #3a3a46 60%, #2c2c36); padding: 18px 0 10px; border: 2px solid #000; }
+  #car-preview { width: min(288px, 70vw); aspect-ratio: 72 / 44; image-rendering: pixelated; max-width: 100%; }
+  .label { font-family: var(--px); font-size: 10px; color: var(--dim); margin: 0; letter-spacing: 0.05em; }
+  .options { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .gen { display: grid; gap: 4px; }
+  .gen span { font-family: var(--px); font-size: 10px; }
+  .gen small { color: var(--dim); font-size: 13px; }
+  .gen[aria-pressed="true"], .swatch[aria-pressed="true"] { border-color: var(--sun); box-shadow: 3px 3px 0 var(--hot); }
+  .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+  .swatch { width: 40px; height: 40px; padding: 0; background: var(--paint); }
+  .swatch:hover { background: var(--paint); filter: brightness(1.15); }
+  .swatch:focus-visible::before { content: none; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th { font-family: var(--px); font-weight: 400; font-size: 8px; color: var(--dim); text-align: left; padding: 4px 6px; letter-spacing: 0.05em; }
+  td { padding: 4px 6px; border-top: 1px solid rgba(255,255,255,0.08); white-space: nowrap; }
+  td.num { font-variant-numeric: tabular-nums; }
+  td i { display: inline-block; width: 10px; height: 10px; margin-right: 8px; border: 1px solid #000; vertical-align: baseline; }
+  tr.me td { color: var(--sun); font-weight: 700; background: rgba(255, 210, 63, 0.08); }
+  #results-actions { width: 100%; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  #touch { position: fixed; inset: 0; pointer-events: none; }
+  #touch button {
+    position: absolute; pointer-events: auto; width: 76px; height: 76px; padding: 0; text-align: center;
+    background: rgba(20, 18, 50, 0.45); border: 2px solid rgba(255,255,255,0.6); border-radius: 50%;
+    font-family: var(--px); font-size: 11px; box-shadow: none; touch-action: none;
+  }
+  #touch button.down { background: rgba(255, 210, 63, 0.5); }
+  #touch [data-key="left"] { left: calc(16px + env(safe-area-inset-left, 0px)); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); }
+  #touch [data-key="right"] { left: calc(104px + env(safe-area-inset-left, 0px)); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); }
+  #touch [data-key="down"] { right: calc(104px + env(safe-area-inset-right, 0px)); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); }
+  #touch [data-key="up"] { right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(60px + env(safe-area-inset-bottom, 0px)); width: 84px; height: 84px; }
+  #touch #touch-pause { left: 50%; transform: translateX(-50%); top: calc(10px + env(safe-area-inset-top, 0px)); width: 44px; height: 44px; border-radius: 6px; }
+  #touch button::before { content: none !important; }
+  #rotate {
+    position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+    background: var(--hot); color: #fff; padding: 8px 12px; font-family: var(--px); font-size: 10px; box-shadow: 3px 3px 0 #000;
+    width: max-content; max-width: calc(100% - 32px); text-align: center; line-height: 1.5;
+  }
+  .credit { margin: 0; font-size: 12px; color: var(--dim); }
+  @media (max-height: 460px) {
+    #title { gap: 10px; }
+    .logo { font-size: clamp(24px, 6vw, 40px); }
+    .panel { padding: 14px; gap: 10px; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .logo { animation: bob 2.4s ease-in-out infinite; }
+    @keyframes bob { 50% { transform: skewX(-8deg) translateY(-4px); } }
+  }
+</style>
+</head>
+<body>
+<canvas id="screen" aria-label="Race view"></canvas>
+
+<div id="ui">
+  <section id="title" class="panel" aria-labelledby="logo">
+    <h1 class="logo" id="logo">MIDSHIP<span>DRIFT</span></h1>
+    <p class="tag">Arcade sprite racing, starring Leo's MR2</p>
+    <nav class="menu" aria-label="Main menu">
+      <button data-action="champ">Championship</button>
+      <button data-action="single">Single race</button>
+      <button data-action="garage">Garage</button>
+    </nav>
+    <p class="hint">Arrows or WASD to drive. P pauses, M toggles music.</p>
+  </section>
+
+  <section id="courses" class="panel" hidden aria-labelledby="courses-title">
+    <h2 id="courses-title">Choose a course</h2>
+    <div id="course-list" class="menu"></div>
+    <div class="menu"><button data-action="back">Back</button></div>
+  </section>
+
+  <section id="garage" class="panel" hidden aria-labelledby="garage-title">
+    <h2 id="garage-title">Leo's garage</h2>
+    <div class="garage-stage"><canvas id="car-preview" width="72" height="44" aria-label="Car preview"></canvas></div>
+    <p class="label">Generation</p>
+    <div id="gen-list" class="options"></div>
+    <p class="label">Paint: <span id="paint-name"></span></p>
+    <div id="paint-list" class="swatches"></div>
+    <div class="menu"><button data-action="back">Done</button></div>
+  </section>
+
+  <section id="results" class="panel" hidden aria-labelledby="results-title">
+    <h2 id="results-title"></h2>
+    <p class="sub" id="results-sub"></p>
+    <div class="table-wrap"><table id="results-table"></table></div>
+    <div id="results-actions" class="menu"></div>
+  </section>
+
+  <section id="pause" class="panel" hidden aria-labelledby="pause-title">
+    <h2 id="pause-title">Paused</h2>
+    <div class="menu">
+      <button data-action="resume">Resume</button>
+      <button data-action="restart">Restart race</button>
+      <button data-action="quit">Quit to title</button>
+    </div>
+  </section>
+</div>
+
+<div id="touch" hidden>
+  <button data-key="left" aria-label="Steer left">&#9664;</button>
+  <button data-key="right" aria-label="Steer right">&#9654;</button>
+  <button data-key="down" aria-label="Brake">BRK</button>
+  <button data-key="up" aria-label="Accelerate">GAS</button>
+  <button id="touch-pause" aria-label="Pause">II</button>
+</div>
+<div id="rotate" hidden>Turn your phone sideways to race</div>
+
+<script src="js/sprites.js"></script>
+<script src="js/tracks.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>

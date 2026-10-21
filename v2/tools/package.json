@@ -1,0 +1,13 @@
+{
+  "name": "midship-drift-sprite-tools",
+  "private": true,
+  "description": "Renders and pixelates the Midship Drift II sprite sheets",
+  "scripts": {
+    "render": "node render.js",
+    "pixelate": "python3 pixelate.py",
+    "backdrops": "python3 backdrops.py"
+  },
+  "dependencies": {
+    "three": "0.160.0"
+  }
+}
