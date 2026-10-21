@@ -14,6 +14,9 @@
   let W = 400;
 
   const LAPS = 4, G = 30, V_TOP = 72, HALF = Track.HALF, CAR_HALF = 1.05;
+  // Player handling. ASSIST is the share of each bend the car follows by itself, so the
+  // steering only has to do the rest; GRIP and DRIFT_GRIP are sideways grip in m/s².
+  const ASSIST = 0.4, GRIP = 29, DRIFT_GRIP = 50;
   const POINTS = [15, 12, 10, 8, 6, 5, 4, 3, 2, 1];
   const ORD = n => n + (n % 10 === 1 && n !== 11 ? 'ST' : n % 10 === 2 && n !== 12 ? 'ND' : n % 10 === 3 && n !== 13 ? 'RD' : 'TH');
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -105,7 +108,7 @@
   function drivePlayer(c, dt) {
     const T = race.T, info = T.at(c.s, tA);
     const steerIn = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
-    c.steer += (steerIn - c.steer) * Math.min(1, dt * (steerIn ? 7 : 11));
+    c.steer += (steerIn - c.steer) * Math.min(1, dt * (steerIn ? 12 : 16));
     const top = V_TOP * (c.boost > 0 ? 1.18 : 1);
     let a;
     if (keys.up) a = 27 * Math.max(0, 1 - (c.v / top) ** 2) + (c.boost > 0 ? 16 : 0);
@@ -119,16 +122,21 @@
     if (!c.drift && (edge.drift || (edge.down && Math.abs(c.steer) > 0.5)) && Math.abs(c.steer) > 0.3 && c.v > 18 && !c.air) {
       c.drift = Math.sign(c.steer); c.driftT = 0; c.h += c.drift * 0.14;
     }
-    // On grip the nose can only turn about as fast as the tyres can follow, so the car
-    // goes where it points. In a drift the nose swings freely and the tail hangs out.
-    const grip = c.air ? 0.2 : 1;
-    const latMax = c.air ? 1 : c.drift ? 44 : 31;
-    const yawMax = c.drift ? 2.5 : Math.min(1.8, (latMax * 1.25) / Math.max(c.v, 6));
-    c.h += c.steer * yawMax * Math.min(1, c.v / 10) * grip * dt;
-    if (c.drift) c.h += c.drift * 0.4 * dt;
-    else if (!c.air) c.h += (c.phi - c.h) * 4 * dt;
-    const maxTurn = latMax / Math.max(c.v, 6);
-    c.phi += clamp((c.h - c.phi) * (c.drift ? 2.2 : 10), -maxTurn, maxTurn) * dt;
+    // On grip the steering sets the turn rate directly, up to what the tyres can hold, and
+    // the car goes where it points. In a drift the nose swings freely, the direction of
+    // travel lags behind it and the tail hangs out.
+    const grip = c.air ? 0.15 : 1;
+    const latMax = c.air ? 1 : c.drift ? DRIFT_GRIP : GRIP;
+    const speedUp = Math.min(1, c.v / 8);
+    if (!c.drift) {
+      c.phi += c.steer * Math.min(2, latMax / Math.max(c.v, 6)) * speedUp * grip * dt;
+      const lean = c.steer * Math.min(0.14, c.v * 0.003);
+      c.h += (c.phi + lean - c.h) * Math.min(1, dt * 12);
+    } else {
+      c.h += (c.steer * 2.6 + c.drift * 0.4) * speedUp * grip * dt;
+      const maxTurn = latMax / Math.max(c.v, 6);
+      c.phi += clamp((c.h - c.phi) * 2.4, -maxTurn, maxTurn) * dt;
+    }
     let slip = c.h - c.phi;
     if (Math.abs(slip) > 1) { c.h = c.phi + Math.sign(slip); slip = c.h - c.phi; }
     c.v -= c.v * Math.abs(Math.sin(slip)) * (c.drift ? 0.26 : 0.8) * dt;
@@ -150,11 +158,14 @@
 
   function driveAI(c, dt) {
     const T = race.T, p = race.player;
-    let kmax = 0;
-    for (let a = 6; a < 26 + c.v * 1.15; a += 6) kmax = Math.max(kmax, Math.abs(T.at(c.s + a, tC).k));
-    if (!race.attract && !c.finished && p && !p.finished) c.rubber = clamp(1 + (p.s - c.s) / 3000, 0.93, 1.05);
+    if (!race.attract && !c.finished && p && !p.finished) c.rubber = clamp(1 + (p.s - c.s) / 2000, 0.9, 1.04);
     const sk = c.skill * c.rubber;
-    const vt = Math.min(V_TOP * (0.86 + 0.14 * sk), Math.sqrt((41 * sk) / Math.max(kmax, 1e-4)));
+    // Fastest speed that still leaves room to brake for every bend in the next stretch.
+    let vt = V_TOP * (0.86 + 0.14 * sk);
+    for (let a = 0; a < 130; a += 6) {
+      const vc = Math.sqrt((50 * sk) / Math.max(Math.abs(T.at(c.s + a, tC).k), 1e-4));
+      vt = Math.min(vt, Math.sqrt(vc * vc + 2 * 26 * Math.max(0, a - 8)));
+    }
     if (race.goT < 0) c.v = 0;
     else if (c.v < vt) c.v += 25 * dt * Math.max(0.25, 1 - (c.v / (V_TOP * 1.05)) ** 2);
     else c.v = Math.max(vt, c.v - 34 * dt);
@@ -188,7 +199,10 @@
     const ds = (c.v * Math.cos(c.phi) * dt) / Math.max(0.3, 1 - k * c.d);
     c.d += c.v * Math.sin(c.phi) * dt;
     c.s += ds;
-    c.h = wrapA(c.h - k * ds); c.phi = wrapA(c.phi - k * ds);
+    // The road turning under the car turns the car's angles to it the other way; the
+    // player's car follows part of each bend by itself.
+    const turn = k * ds * (c.human ? 1 - ASSIST : 1);
+    c.h = wrapA(c.h - turn); c.phi = wrapA(c.phi - turn);
     if (Math.abs(c.h - c.phi) > Math.PI) c.h += c.h > c.phi ? -2 * Math.PI : 2 * Math.PI;
 
     // Crash rails
@@ -196,6 +210,7 @@
     if (Math.abs(c.d) > lim) {
       const side = Math.sign(c.d);
       c.d = side * lim;
+      c.v -= c.v * 0.7 * dt; // rubbing the rail slows you, so riding the wall never pays
       const into = Math.sin(c.phi) * side;
       if (into > 0) {
         const back = Math.cos(c.phi) < 0, np = Math.asin(-0.25 * Math.sin(c.phi));

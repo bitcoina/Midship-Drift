@@ -76,7 +76,9 @@ straightest stretch of the course.
 
 **Cars** live in track coordinates: distance along the road, sideways offset, where the
 nose points and which way the car is actually travelling. When the last two differ the
-car is sliding. Drifting loosens the grip that pulls the direction of travel back into
+car is sliding. On grip, the steering sets how fast the car turns, and the car follows
+part of each bend by itself, so the steering only has to do the rest. Rubbing a rail
+slows you down. Drifting loosens the grip that pulls the direction of travel back into
 line with the nose. Cars keep their climb rate, so a hump taken fast throws you into the
 air.
 
