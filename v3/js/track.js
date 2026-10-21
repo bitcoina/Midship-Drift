@@ -1,0 +1,204 @@
+'use strict';
+// Track builder for Midship Drift III.
+//
+// A course outline is a closed curve in the ground plane. The builder resamples it into
+// evenly spaced points, works out heading, curvature and banking, then looks for places
+// where the course crosses itself. At every crossing one branch is lifted on a smooth
+// hump so it clears the other as a bridge. Course authors only draw the shape.
+const Track = (() => {
+  const SEG = 3;         // metres between samples
+  const HALF = 8;        // half the road width
+  const CLEAR = 8.5;     // how far an overpass sits above the road it crosses
+  const NEAR = 20;       // horizontal distance at which two branches count as crossing
+
+  function build(course) {
+    // 1. Dense outline and its arc length.
+    const N = 8000, raw = [], cum = [0];
+    for (let k = 0; k < N; k++) raw.push(course.path((k / N) * Math.PI * 2));
+    for (let k = 1; k <= N; k++) {
+      const a = raw[k - 1], b = raw[k % N];
+      cum.push(cum[k - 1] + Math.hypot(b[0] - a[0], b[1] - a[1]));
+    }
+    const rawLen = cum[N], scale = course.length / rawLen;
+    const n = Math.round(course.length / SEG), seg = course.length / n, L = n * seg;
+
+    // 2. Resample evenly, starting from the course's start fraction.
+    const xs = new Float64Array(n), zs = new Float64Array(n);
+    let k = 0;
+    for (let i = 0; i < n; i++) {
+      let d = ((course.start || 0) + i / n) % 1 * rawLen;
+      if (d < cum[k]) k = 0;
+      while (cum[k + 1] < d) k++;
+      const t = (d - cum[k]) / (cum[k + 1] - cum[k]), a = raw[k], b = raw[(k + 1) % N];
+      xs[i] = (a[0] + (b[0] - a[0]) * t) * scale;
+      zs[i] = (a[1] + (b[1] - a[1]) * t) * scale;
+    }
+    let cx = 0, cz = 0;
+    for (let i = 0; i < n; i++) { cx += xs[i]; cz += zs[i]; }
+    cx /= n; cz /= n;
+    for (let i = 0; i < n; i++) { xs[i] -= cx; zs[i] -= cz; }
+    if (course.mirror) for (let i = 0; i < n; i++) xs[i] = -xs[i];
+
+    const W = i => ((i % n) + n) % n;
+
+    // 3. Heading, right vector and curvature. Right is cross(forward, up), so a
+    // positive curvature bends the road to the right.
+    const fx = new Float64Array(n), fz = new Float64Array(n), k0 = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const dx = xs[W(i + 1)] - xs[W(i - 1)], dz = zs[W(i + 1)] - zs[W(i - 1)], l = Math.hypot(dx, dz);
+      fx[i] = dx / l; fz[i] = dz / l;
+    }
+    for (let i = 0; i < n; i++) {
+      const dfx = fx[W(i + 1)] - fx[W(i - 1)], dfz = fz[W(i + 1)] - fz[W(i - 1)];
+      k0[i] = (dfx * -fz[i] + dfz * fx[i]) / (2 * seg);
+    }
+    const curv = smooth(k0, 4, W);
+
+    // 4. Base heights from the course, then bridges at the crossings.
+    const base = new Float64Array(n);
+    for (let i = 0; i < n; i++) base[i] = course.height ? course.height(i / n) : 0;
+
+    const grid = new Map(), CELL = 24;
+    const key = (gx, gz) => gx * 73856 + gz;
+    for (let i = 0; i < n; i++) {
+      const kk = key(Math.floor(xs[i] / CELL), Math.floor(zs[i] / CELL));
+      if (!grid.has(kk)) grid.set(kk, []);
+      grid.get(kk).push(i);
+    }
+    const gap = (i, j) => { const d = Math.abs(i - j); return Math.min(d, n - d); };
+    function nearby(x, z, r, fn) {
+      const g0 = Math.floor((x - r) / CELL), g1 = Math.floor((x + r) / CELL);
+      const h0 = Math.floor((z - r) / CELL), h1 = Math.floor((z + r) / CELL);
+      for (let gx = g0; gx <= g1; gx++) for (let gz = h0; gz <= h1; gz++) {
+        const list = grid.get(key(gx, gz));
+        if (list) for (const j of list) if (Math.hypot(xs[j] - x, zs[j] - z) < r) fn(j);
+      }
+    }
+
+    // Pairs of samples that are close in the plane but far apart along the road.
+    const pairs = [];
+    for (let i = 0; i < n; i++) {
+      nearby(xs[i], zs[i], NEAR, j => { if (j > i && gap(i, j) > 30) pairs.push([i, j]); });
+    }
+    // Group the pairs into crossings. Indices wrap at the start line, so a crossing
+    // there can show up with its two branches either way round; keep them consistent.
+    const events = [];
+    for (const [i, j] of pairs) {
+      let ev = null, swap = false;
+      for (const e of events) {
+        for (const [a, b] of e.pairs) {
+          if (gap(i, a) <= 4 && gap(j, b) <= 4) { ev = e; break; }
+          if (gap(i, b) <= 4 && gap(j, a) <= 4) { ev = e; swap = true; break; }
+        }
+        if (ev) break;
+      }
+      if (!ev) { ev = { pairs: [] }; events.push(ev); }
+      ev.pairs.push(swap ? [j, i] : [i, j]);
+    }
+    // Centre (by circular mean) and half-width, in samples, of one branch of a crossing.
+    const span = idx => {
+      let sx = 0, sy = 0;
+      for (const k of idx) { const a = (k / n) * Math.PI * 2; sx += Math.cos(a); sy += Math.sin(a); }
+      const c = W(Math.round((Math.atan2(sy, sx) / (Math.PI * 2)) * n));
+      return [c, Math.max(...idx.map(k => gap(k, c)))];
+    };
+    for (const ev of events) { ev.A = span(ev.pairs.map(p => p[0])); ev.B = span(ev.pairs.map(p => p[1])); }
+
+    // Lift the chosen branch of each crossing until every crossing has clearance. Two
+    // crossings close together can fight (one's ramp raises the other's lower road), so
+    // every over/under combination is tried and the lowest one that works is kept.
+    function lifted(mask) {
+      const h = Float64Array.from(base), lifts = events.map(() => 0);
+      const overB = events.map((ev, e) => ((mask >> e) & 1) === 1);
+      for (let pass = 0; pass < 8; pass++) {
+        let worst = 0;
+        events.forEach((ev, e) => {
+          let need = 0;
+          for (const [i, j] of ev.pairs) need = Math.max(need, CLEAR - (overB[e] ? h[j] - h[i] : h[i] - h[j]));
+          if (need > 0.01) { lifts[e] += need + 0.2; worst = Math.max(worst, need); }
+        });
+        if (worst < 0.01) return { h, ok: true, top: Math.max(...h), overB, lifts };
+        const lift = new Float64Array(n);
+        events.forEach((ev, e) => {
+          if (lifts[e] <= 0) return;
+          const [c, half] = overB[e] ? ev.B : ev.A, plateau = half + 5;
+          const ramp = Math.max(18, Math.ceil((lifts[e] * 7) / seg));
+          for (let d = -Math.ceil(plateau + ramp); d <= Math.ceil(plateau + ramp); d++) {
+            const ad = Math.abs(d);
+            const v = ad <= plateau ? lifts[e] : lifts[e] * 0.5 * (1 + Math.cos((Math.PI * (ad - plateau)) / ramp));
+            const idx = W(c + d);
+            lift[idx] = Math.max(lift[idx], v);
+          }
+        });
+        for (let i = 0; i < n; i++) h[i] = base[i] + lift[i];
+      }
+      return { h, ok: false, top: Infinity, overB, lifts };
+    }
+    let pick = null;
+    const combos = events.length <= 10 ? 1 << events.length : 1;
+    for (let mask = 0; mask < combos; mask++) {
+      const r = lifted(combos > 1 ? mask : (1 << events.length) - 1);
+      if (!pick || r.top < pick.top) pick = r;
+    }
+    const h = pick.h;
+    events.forEach((ev, e) => { ev.overB = pick.overB[e]; ev.over = ev.overB ? ev.B : ev.A; ev.lift = pick.lifts[e]; });
+
+    // 5. Banking leans the road into corners; slope is the climb per metre.
+    const bank = smooth(Float64Array.from(curv, c => Math.max(-0.24, Math.min(0.24, c * 6))), 8, W);
+    const slope = new Float64Array(n);
+    for (let i = 0; i < n; i++) slope[i] = (h[W(i + 1)] - h[W(i - 1)]) / (2 * seg);
+
+    // The lowest road (other than this stretch) within r metres of a point, or Infinity.
+    function otherRoadBelow(x, z, i, r) {
+      let low = Infinity;
+      nearby(x, z, r, j => { if (gap(i, j) > 12) low = Math.min(low, h[j]); });
+      return low;
+    }
+
+    // Everything about the road at distance s along it.
+    function at(s, out = {}) {
+      s = ((s % L) + L) % L;
+      const f = s / seg, i = Math.floor(f) % n, j = W(i + 1), t = f - Math.floor(f);
+      const lerp = (arr) => arr[i] + (arr[j] - arr[i]) * t;
+      out.i = i; out.t = t;
+      out.x = lerp(xs); out.z = lerp(zs); out.y = lerp(h);
+      let ax = fx[i] + (fx[j] - fx[i]) * t, az = fz[i] + (fz[j] - fz[i]) * t;
+      const l = Math.hypot(ax, az); ax /= l; az /= l;
+      out.fx = ax; out.fz = az; out.rx = -az; out.rz = ax;
+      out.k = lerp(curv); out.bank = lerp(bank); out.slope = lerp(slope);
+      return out;
+    }
+
+    const T = {
+      n, seg, L, xs, zs, h, fx, fz, curv, bank, slope, events, HALF, W, gap,
+      at, otherRoadBelow, nearby,
+    };
+    if (course.start !== undefined || course._picked) return T;
+    // No start given: put the line on the straightest flat stretch, so the grid sits
+    // well behind it and the first bridge is a little way after it.
+    let best = 0, bestScore = Infinity;
+    for (let i = 0; i < n; i++) {
+      let score = 0;
+      for (let d = -Math.round(90 / seg); d <= Math.round(50 / seg); d++) {
+        const j = W(i + d);
+        score += Math.abs(curv[j]) * 400 + Math.abs(slope[j]) * 30 + (h[j] - base[j] > 0.5 ? 3 : 0);
+      }
+      if (score < bestScore) { bestScore = score; best = i; }
+    }
+    return build(Object.assign({}, course, { start: best / n, _picked: true }));
+  }
+
+  function smooth(arr, r, W) {
+    const n = arr.length, out = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      let s = 0;
+      for (let d = -r; d <= r; d++) s += arr[W(i + d)];
+      out[i] = s / (2 * r + 1);
+    }
+    return out;
+  }
+
+  return { build, SEG, HALF, CLEAR };
+})();
+
+if (typeof module !== 'undefined') module.exports = Track;
