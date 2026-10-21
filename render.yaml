@@ -5,6 +5,7 @@ services:
     name: midship-drift
     runtime: node
     plan: free
+    region: frankfurt   # closest Render region to the UK; it can't be changed once a service exists
     rootDir: server
     buildCommand: npm install
     startCommand: node server.js
