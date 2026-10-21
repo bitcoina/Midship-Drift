@@ -95,9 +95,24 @@
   #touch button.down { background: rgba(255, 210, 63, 0.75); }
   #touch [data-key="left"] { left: calc(14px + env(safe-area-inset-left, 0px)); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
   #touch [data-key="right"] { left: calc(100px + env(safe-area-inset-left, 0px)); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
-  #touch [data-key="down"] { right: calc(100px + env(safe-area-inset-right, 0px)); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
-  #touch [data-key="up"] { right: calc(14px + env(safe-area-inset-right, 0px)); bottom: calc(58px + env(safe-area-inset-bottom, 0px)); width: 82px; height: 82px; }
-  #touch [data-key="drift"] { right: calc(100px + env(safe-area-inset-right, 0px)); bottom: calc(102px + env(safe-area-inset-bottom, 0px)); background: rgba(255, 63, 108, 0.45); }
+  #touch [data-key="down"] { right: calc(112px + env(safe-area-inset-right, 0px)); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+  /* Pedal strip: hold anywhere for gas, slide up into the top zone to drift. */
+  #pedal {
+    position: absolute; pointer-events: auto; touch-action: none;
+    right: calc(14px + env(safe-area-inset-right, 0px)); bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+    width: 86px; height: clamp(140px, 50vh, 230px); border-radius: 22px; overflow: hidden;
+    border: 3px solid rgba(27,21,48,0.75); display: grid; grid-template-rows: 2fr 3fr;
+    font-family: var(--px); font-size: 10px; color: var(--ink); text-align: center;
+  }
+  #pedal span { display: grid; place-items: center; transition: background 0.08s; }
+  #pedal .p-drift { background: rgba(255, 63, 108, 0.35); border-bottom: 2px dashed rgba(27,21,48,0.6); }
+  #pedal .p-gas { background: rgba(255, 248, 230, 0.35); }
+  #pedal.gas .p-gas, #pedal.drift .p-gas { background: rgba(255, 210, 63, 0.75); }
+  #pedal.drift .p-drift { background: rgba(255, 63, 108, 0.85); color: #fff; }
+  #pedal i {
+    position: absolute; left: 10px; right: 10px; height: 10px; margin-top: -5px; border-radius: 5px;
+    background: #fff; border: 2px solid var(--ink); pointer-events: none;
+  }
   #touch #touch-pause { left: 50%; transform: translateX(-50%); bottom: calc(10px + env(safe-area-inset-bottom, 0px)); width: 44px; height: 44px; border-radius: 10px; }
   #rotate {
     position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
@@ -169,8 +184,7 @@
   <button data-key="left" aria-label="Steer left">&#9664;</button>
   <button data-key="right" aria-label="Steer right">&#9654;</button>
   <button data-key="down" aria-label="Brake">BRK</button>
-  <button data-key="drift" aria-label="Drift">DRIFT</button>
-  <button data-key="up" aria-label="Accelerate">GAS</button>
+  <div id="pedal" aria-label="Accelerator: hold for gas, slide up to drift"><span class="p-drift">DRIFT</span><span class="p-gas">GAS</span><i hidden></i></div>
   <button id="touch-pause" aria-label="Pause">II</button>
 </div>
 <div id="rotate" hidden>Turn your phone sideways to race</div>

@@ -565,16 +565,19 @@
 
     // speed
     const kmh = Math.round(p.v * 3.6);
-    big(sg, String(kmh), W - 34, H - 22, p.boost > 0 ? '#5ad1ff' : '#ffffff', 3, 'right');
-    big(sg, 'KM/H', W - 8, H - 16, '#ffd23f', 1, 'right');
+    // On touch screens the pedal strip covers the bottom right, so the speed moves up.
+    const sy = touchShown ? 80 : H - 22;
+    big(sg, String(kmh), W - 34, sy, p.boost > 0 ? '#5ad1ff' : '#ffffff', 3, 'right');
+    big(sg, 'KM/H', W - 8, sy + 6, '#ffd23f', 1, 'right');
 
     // drift meter
     if (p.drift || p.boost > 0) {
       const k = p.boost > 0 ? p.boost / 2.2 : clamp(p.driftT / 1.8, 0, 1);
       const col = p.boost > 0 ? '#5ad1ff' : p.driftT > 1.8 ? '#ff7a2a' : p.driftT > 0.75 ? '#5ad1ff' : '#ffd23f';
-      big(sg, p.boost > 0 ? 'BOOST' : 'DRIFT', W / 2, H - 30, col, 2, 'center');
-      sg.fillStyle = '#000'; sg.fillRect(W / 2 - 31, H - 15, 62, 7);
-      sg.fillStyle = col; sg.fillRect(W / 2 - 30, H - 14, Math.round(60 * k), 5);
+      const my = touchShown ? H - 58 : H - 30; // clear of the pause button on touch screens
+      big(sg, p.boost > 0 ? 'BOOST' : 'DRIFT', W / 2, my, col, 2, 'center');
+      sg.fillStyle = '#000'; sg.fillRect(W / 2 - 31, my + 15, 62, 7);
+      sg.fillStyle = col; sg.fillRect(W / 2 - 30, my + 16, Math.round(60 * k), 5);
     }
 
     minimap();
@@ -636,10 +639,11 @@
     if (first) first.focus({ preventScroll: true });
     updateTouch();
   }
-  let isTouch = matchMedia('(pointer: coarse)').matches;
+  let isTouch = matchMedia('(pointer: coarse)').matches, touchShown = false;
   function updateTouch() {
     const playing = race && !race.attract && (mode === 'race' || mode === 'countdown' || mode === 'intro') && !paused;
-    $('#touch').hidden = !(isTouch && playing);
+    touchShown = isTouch && playing;
+    $('#touch').hidden = !touchShown;
     $('#rotate').hidden = !(isTouch && playing && innerHeight > innerWidth);
   }
 
@@ -654,6 +658,7 @@
     paused = false;
     show(null);
     newRace(idx);
+    updateTouch(); // the new race exists now, so the touch controls can appear
     Sound.init(); Sound.startEngine(); Sound.startMusic();
   }
 
@@ -816,6 +821,36 @@
     const off = e => { e.preventDefault(); keys[k] = false; b.classList.remove('down'); };
     b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off);
     b.addEventListener('pointercancel', off); b.addEventListener('pointerleave', off);
+  }
+  // Pedal strip: a thumb anywhere on it is the accelerator; sliding up into the top zone
+  // adds the drift (gas and brake together), sliding back down drops it, and the thumb
+  // never has to leave the gas. The zone edge has a little overlap so it doesn't flicker.
+  {
+    const pedal = $('#pedal'), knob = pedal.querySelector('i');
+    let id = null;
+    const track = e => {
+      const r = pedal.getBoundingClientRect(), f = clamp((e.clientY - r.top) / r.height, 0, 1);
+      const drift = keys.drift ? f < 0.48 : f < 0.4;
+      if (drift && !keys.drift) edge.drift = true;
+      keys.up = true; keys.drift = drift;
+      pedal.className = drift ? 'drift' : 'gas';
+      knob.hidden = false; knob.style.top = `${f * 100}%`;
+    };
+    pedal.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      id = e.pointerId;
+      try { pedal.setPointerCapture(id); } catch (_) { /* keeps working, just stops at the strip's edge */ }
+      if (!keys.up) edge.up = true;
+      edge.any = true;
+      track(e);
+    });
+    pedal.addEventListener('pointermove', e => { if (e.pointerId === id) { e.preventDefault(); track(e); } });
+    const off = e => {
+      if (e.pointerId !== id) return;
+      id = null; keys.up = keys.drift = false;
+      pedal.className = ''; knob.hidden = true;
+    };
+    pedal.addEventListener('pointerup', off); pedal.addEventListener('pointercancel', off);
   }
   $('#touch-pause').addEventListener('click', () => setPaused(true));
   addEventListener('pointerdown', e => { if (e.pointerType === 'touch' && !isTouch) { isTouch = true; updateTouch(); } });

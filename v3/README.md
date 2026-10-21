@@ -22,9 +22,9 @@ double-clicking the file works. It needs WebGL, which every current browser has.
 | Action | Keys | Touch |
 | --- | --- | --- |
 | Steer | Left / Right, or A / D | Arrow buttons, bottom left |
-| Accelerate | Up, W or Z | GAS |
+| Accelerate | Up, W or Z | Hold the pedal strip, bottom right |
 | Brake | Down, S or X | BRK |
-| Drift | Hold Accelerate and Brake together while steering (Space or Shift does both) | Hold DRIFT |
+| Drift | Hold Accelerate and Brake together while steering (Space or Shift does both) | Slide your thumb up the pedal strip into DRIFT; slide back down to stop, still on the gas |
 | Pause | P or Esc | II |
 | Music on/off | M | |
 
