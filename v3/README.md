@@ -24,19 +24,25 @@ double-clicking the file works. It needs WebGL, which every current browser has.
 | Steer | Left / Right, or A / D | Arrow buttons, bottom left |
 | Accelerate | Up, W or Z | GAS |
 | Brake | Down, S or X | BRK |
-| Drift | Space or Shift (while steering) | DRIFT |
+| Drift | Hold Accelerate and Brake together while steering (Space or Shift does both) | Hold DRIFT |
 | Pause | P or Esc | II |
 | Music on/off | M | |
 
 ### Drifting
 
 On grip the MR2 goes where it points, but a tight corner at full speed will push it wide.
-To drift, steer into the bend and press **Space**, or tap the brake while steering hard.
-The tail swings out and the car can now turn much tighter without losing much speed.
-Hold the steering to keep the slide going and counter-steer to straighten up.
+To drift, steer into the bend and **hold the accelerator and brake together**. The tail
+swings out and the car can turn much tighter without losing much speed. While both are
+held the brake doesn't slow you, it just holds the slide. Steer to swing the nose in or
+out.
 
-Hold a drift for long enough and the sparks under the car change colour. Straighten up
-on blue sparks for a **TURBO**, or on orange sparks for a **SUPER TURBO**.
+**Let go of either pedal to come out of the drift.** The tyres grip again and the car
+straightens up to point straight down the road, so there's no need to steer the other
+way to catch it. If you slide into a wall the drift ends; let go and press
+again to start a new one.
+
+Hold a drift for long enough and the sparks under the car change colour. Let go on blue
+sparks for a **TURBO**, or on orange sparks for a **SUPER TURBO**.
 
 ### Racing
 

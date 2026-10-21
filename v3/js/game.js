@@ -13,7 +13,10 @@
   const H = 224;
   let W = 400;
 
-  const LAPS = 4, G = 30, V_TOP = 72, HALF = Track.HALF, CAR_HALF = 1.05;
+  const LAPS = 4, G = 30, HALF = Track.HALF, CAR_HALF = 1.05;
+  // Top speeds in m/s: Leo's MR2 is quicker in a straight line than the rivals, who make
+  // up for it by never missing a corner.
+  const V_TOP = 82, AI_TOP = 72;
   // Player handling. ASSIST is the share of each bend the car follows by itself, so the
   // steering only has to do the rest; GRIP and DRIFT_GRIP are sideways grip in m/s².
   const ASSIST = 0.4, GRIP = 29, DRIFT_GRIP = 50;
@@ -109,19 +112,26 @@
     const T = race.T, info = T.at(c.s, tA);
     const steerIn = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
     c.steer += (steerIn - c.steer) * Math.min(1, dt * (steerIn ? 12 : 16));
+    // Drifting is held, not toggled: accelerator and brake together (or the drift key)
+    // while steering at speed. Let go of either and the tyres grip again.
+    const gas = keys.up || keys.drift, brake = keys.down || keys.drift;
+    const held = gas && brake;
+    if (!held) c.driftLock = false;
+    if (c.drift && (!held || c.v < 12)) endDrift(c, true);
+    if (!c.drift && held && !c.driftLock && Math.abs(c.steer) > 0.3 && c.v > 18 && !c.air) {
+      c.drift = Math.sign(c.steer); c.driftT = 0; c.h += c.drift * 0.14;
+    }
+
     const top = V_TOP * (c.boost > 0 ? 1.18 : 1);
     let a;
-    if (keys.up) a = 27 * Math.max(0, 1 - (c.v / top) ** 2) + (c.boost > 0 ? 16 : 0);
+    if (gas) a = 32 * Math.max(0, 1 - (c.v / top) ** 2) + (c.boost > 0 ? 16 : 0);
     else a = -3 - c.v * 0.05;
-    if (keys.down) a -= 42;
+    // In a drift the brake just holds the tail out; with the accelerator also down it only
+    // dabs, so getting ready to drift doesn't kill your speed.
+    if (brake && !c.drift) a -= gas ? 12 : 42;
     if (c.v > top) a = Math.min(a, -10);
     c.v = Math.max(0, c.v + a * dt);
     c.boost = Math.max(0, c.boost - dt);
-
-    // Tap brake or press drift while steering at speed to throw the car sideways.
-    if (!c.drift && (edge.drift || (edge.down && Math.abs(c.steer) > 0.5)) && Math.abs(c.steer) > 0.3 && c.v > 18 && !c.air) {
-      c.drift = Math.sign(c.steer); c.driftT = 0; c.h += c.drift * 0.14;
-    }
     // On grip the steering sets the turn rate directly, up to what the tyres can hold, and
     // the car goes where it points. In a drift the nose swings freely, the direction of
     // travel lags behind it and the tail hangs out.
@@ -129,9 +139,22 @@
     const latMax = c.air ? 1 : c.drift ? DRIFT_GRIP : GRIP;
     const speedUp = Math.min(1, c.v / 8);
     if (!c.drift) {
-      c.phi += c.steer * Math.min(2, latMax / Math.max(c.v, 6)) * speedUp * grip * dt;
+      // Just out of a drift the steering is damped, so a key still held from the slide
+      // doesn't carry on turning the car.
+      const recovering = c.recover > 0 && Math.abs(c.h) < 1.4;
+      c.phi += c.steer * (recovering ? 0.2 : 1) * Math.min(2, latMax / Math.max(c.v, 6)) * speedUp * grip * dt;
       const lean = c.steer * Math.min(0.14, c.v * 0.003);
-      c.h += (c.phi + lean - c.h) * Math.min(1, dt * 12);
+      if (recovering) {
+        // The tyres bite and the car straightens up along the road: nose and direction of
+        // travel both swing round to dead ahead, so you come out pointing straight.
+        c.recover -= dt;
+        const k = Math.min(1, dt * 10);
+        c.phi -= c.phi * k;
+        c.h -= c.h * k;
+      } else {
+        c.recover = 0;
+        c.h += (c.phi + lean - c.h) * Math.min(1, dt * 12);
+      }
     } else {
       c.h += (c.steer * 2.6 + c.drift * 0.4) * speedUp * grip * dt;
       const maxTurn = latMax / Math.max(c.v, 6);
@@ -140,34 +163,35 @@
     let slip = c.h - c.phi;
     if (Math.abs(slip) > 1) { c.h = c.phi + Math.sign(slip); slip = c.h - c.phi; }
     c.v -= c.v * Math.abs(Math.sin(slip)) * (c.drift ? 0.26 : 0.8) * dt;
-    if (c.drift) {
-      c.driftT += dt * (Math.abs(slip) > 0.22 ? 1 : 0.3);
-      if (c.v < 14 || slip * c.drift < -0.05 || (Math.abs(slip) < 0.1 && c.steer * c.drift < 0.25)) endDrift(c);
-    }
+    if (c.drift) c.driftT += dt * (Math.abs(slip) > 0.22 ? 1 : 0.3);
     integrate(c, info, dt);
   }
 
-  function endDrift(c) {
-    if (c.human && c.driftT > 0.75) {
+  // clean: the player let go, so the car grips up along its nose and earns any turbo.
+  // Otherwise (a wall, the finish) the drift is simply cancelled.
+  function endDrift(c, clean = false) {
+    if (c.human && clean && c.driftT > 0.75) {
       c.boost = Math.min(2.2, 0.5 + c.driftT * 0.55);
       msg(c.driftT > 1.8 ? 'SUPER TURBO!' : 'TURBO!', 1.1, c.driftT > 1.8 ? '#ff7a2a' : '#5ad1ff', 150);
       Sound.blip();
     }
+    if (clean && c.drift) c.recover = 0.35;
+    else if (c.drift) c.driftLock = true; // keep holding and it won't re-drift until you let go
     c.drift = 0; c.driftT = 0;
   }
 
   function driveAI(c, dt) {
     const T = race.T, p = race.player;
-    if (!race.attract && !c.finished && p && !p.finished) c.rubber = clamp(1 + (p.s - c.s) / 2000, 0.9, 1.04);
+    if (!race.attract && !c.finished && p && !p.finished) c.rubber = clamp(1 + (p.s - c.s) / 900, 0.82, 1.03);
     const sk = c.skill * c.rubber;
     // Fastest speed that still leaves room to brake for every bend in the next stretch.
-    let vt = V_TOP * (0.86 + 0.14 * sk);
+    let vt = AI_TOP * (0.86 + 0.14 * sk);
     for (let a = 0; a < 130; a += 6) {
       const vc = Math.sqrt((50 * sk) / Math.max(Math.abs(T.at(c.s + a, tC).k), 1e-4));
       vt = Math.min(vt, Math.sqrt(vc * vc + 2 * 26 * Math.max(0, a - 8)));
     }
     if (race.goT < 0) c.v = 0;
-    else if (c.v < vt) c.v += 25 * dt * Math.max(0.25, 1 - (c.v / (V_TOP * 1.05)) ** 2);
+    else if (c.v < vt) c.v += 25 * dt * Math.max(0.25, 1 - (c.v / (AI_TOP * 1.05)) ** 2);
     else c.v = Math.max(vt, c.v - 34 * dt);
 
     // Line: drift to the inside of the bend coming up, plus a personal lane.
@@ -217,7 +241,7 @@
         const nphi = back ? Math.PI - np : np;
         c.h = wrapA(nphi + (c.h - c.phi) * 0.4); c.phi = wrapA(nphi);
         c.v *= 1 - 0.5 * into;
-        if (c.drift && into > 0.25) { c.drift = 0; c.driftT = 0; }
+        if (c.drift && into > 0.25) endDrift(c);
         if (c.human && c.bumpT <= 0) {
           if (into > 0.2) Sound.bump(Math.min(1, into * 1.5)); else Sound.scrape();
           c.bumpT = 0.25;
@@ -365,7 +389,7 @@
     const p = R.player;
     if (p && p.human && !p.finished) {
       p.wrongT = Math.cos(p.phi) < -0.2 && p.v > 4 ? p.wrongT + dt : 0;
-      const top = V_TOP * (p.boost > 0 ? 1.18 : 1), gears = [0, 15, 27, 39, 52, 64, 90];
+      const top = V_TOP * (p.boost > 0 ? 1.18 : 1), gears = [0, 17, 31, 45, 59, 73, 100];
       let g = 0; while (g < gears.length - 2 && p.v > gears[g + 1]) g++;
       Sound.setEngine(clamp((p.v - gears[g]) / (gears[g + 1] - gears[g]), 0, 1) * 0.8 + p.v / top * 0.2, keys.up ? 1 : 0);
       Sound.setSkid(!p.air && p.v > 12 ? clamp((Math.abs(p.h - p.phi) - 0.12) * 2, 0, 1) : 0);
@@ -463,7 +487,10 @@
     const R = race;
     const view = camera(dt);
     sg.clearRect(0, 0, W, H);
-    GLR.begin(W, H, view.eye, view.tgt, 0.95, R.fogCol, view.fogNear, view.fogFar);
+    // The view widens with speed, and a little more on a turbo, so going fast feels fast.
+    const p = R.player, wide = mode === 'garage' || mode === 'intro' ? 0 : clamp(p.v / V_TOP, 0, 1.2) * 0.17 + (p.boost > 0 ? 0.07 : 0);
+    R.fov = R.fov === undefined ? 0.95 + wide : R.fov + (0.95 + wide - R.fov) * Math.min(1, dt * 3);
+    GLR.begin(W, H, view.eye, view.tgt, R.fov, R.fogCol, view.fogNear, view.fogFar);
     drawSky(view);
 
     GLR.draw(R.world);
