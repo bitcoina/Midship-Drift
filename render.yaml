@@ -1,0 +1,12 @@
+# Render blueprint for the Midship Drift online server (the game itself stays on GitHub Pages).
+# In Render: New > Blueprint > pick this repository. It reads this file and sets up the service.
+services:
+  - type: web
+    name: midship-drift
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /
+    autoDeploy: true

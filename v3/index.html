@@ -85,6 +85,31 @@
   td.num { font-variant-numeric: tabular-nums; }
   td img { width: 33px; height: 33px; image-rendering: pixelated; vertical-align: middle; display: block; }
   tr.me td { background: #ffe9a0; }
+  #online { width: min(620px, 100%); }
+  #online-join { width: 100%; }
+  .join-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+  #join-code {
+    font-family: var(--px); font-size: 18px; letter-spacing: 0.3em; text-transform: uppercase; text-align: center;
+    padding: 10px; border: 3px solid var(--ink); border-radius: 12px; background: #fff; color: var(--ink); min-width: 0;
+  }
+  #join-code:focus-visible { outline: 3px solid var(--hot); outline-offset: 3px; }
+  .join-row button { text-align: center; font-family: var(--px); font-weight: 400; font-size: 12px; }
+  #online-room { display: grid; gap: 10px; }
+  .room-line { margin: 0; font-size: 18px; font-weight: 800; }
+  #room-code { font-family: var(--px); font-weight: 400; font-size: 22px; letter-spacing: 0.2em; color: var(--hot); margin: 0 6px; }
+  .room-line small { color: var(--dim); font-size: 13px; }
+  #online-players { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 14px; }
+  #online-players li { display: flex; align-items: center; gap: 6px; font-weight: 800; }
+  #online-players img, #online-faces img { width: 33px; height: 33px; image-rendering: pixelated; display: block; }
+  #online-faces { display: flex; flex-wrap: wrap; gap: 6px; }
+  #online-faces .face { padding: 3px; border-radius: 10px; }
+  #online-faces .face[aria-pressed="true"] { background: var(--sun); outline: 3px solid var(--hot); outline-offset: 1px; }
+  #online-courses { display: flex; flex-wrap: wrap; gap: 6px; }
+  #online-courses button { padding: 6px 10px; font-size: 14px; }
+  #online-courses button[aria-pressed="true"] { background: var(--sun); }
+  #online-courses button:disabled { opacity: 1; cursor: default; }
+  #online-courses button:disabled:not([aria-pressed="true"]) { opacity: 0.45; }
+  #online-start { background: var(--sun); text-align: center; }
   #results-actions { width: 100%; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
   #touch { position: fixed; inset: 0; pointer-events: none; }
   #touch button {
@@ -142,6 +167,7 @@
     <nav class="menu" aria-label="Main menu">
       <button data-action="champ">Championship</button>
       <button data-action="single">Single race</button>
+      <button data-action="online">Online race</button>
       <button data-action="garage">Garage</button>
     </nav>
     <p class="hint">Arrows or WASD to drive. Hold accelerator and brake together to drift. P pauses, M toggles music.</p>
@@ -159,6 +185,34 @@
     <p class="label">Paint: <span id="paint-name"></span></p>
     <div id="paint-list" class="swatches"></div>
     <div class="menu"><button data-action="back">Done</button></div>
+  </section>
+
+  <section id="online" class="panel" hidden aria-labelledby="online-title">
+    <h2 id="online-title">Online race</h2>
+    <p class="sub" id="online-status" role="status"></p>
+    <div id="online-join" class="menu">
+      <p class="garage-note">Race up to three friends on their own phones or computers. One of you makes a room and reads out the code.</p>
+      <button data-action="online-create">Make a room</button>
+      <label class="label" for="join-code">Or join with a code</label>
+      <div class="join-row">
+        <input id="join-code" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD" inputmode="text">
+        <button data-action="online-join">Join</button>
+      </div>
+      <button data-action="online-back">Back</button>
+    </div>
+    <div id="online-room" hidden>
+      <p class="room-line">Room <strong id="room-code"></strong> <small id="online-lag"></small></p>
+      <ul id="online-players"></ul>
+      <p class="label">Your driver</p>
+      <div id="online-faces"></div>
+      <p class="label">Course (the host picks)</p>
+      <div id="online-courses"></div>
+      <div class="menu">
+        <button id="online-start" data-action="online-start">Start race</button>
+        <p class="sub" id="online-wait"></p>
+        <button data-action="online-leave">Leave room</button>
+      </div>
+    </div>
   </section>
 
   <section id="results" class="panel" hidden aria-labelledby="results-title">
@@ -197,6 +251,7 @@
 <script src="js/models.js"></script>
 <script src="js/scene.js"></script>
 <script src="js/audio.js"></script>
+<script src="js/net.js"></script>
 <script src="js/game.js"></script>
 </body>
 </html>

@@ -4,7 +4,17 @@ A plan for racing 2, 3 or 4 people against each other over the internet, each on
 own phone or computer. It starts with how the game works today, because the multiplayer
 design leans on it.
 
-Status: **proposal, not built.** Nothing here exists in the code yet.
+Status: **stages 1 and 2 are built** (see the build plan in section 4): rooms, the lobby,
+the synced start, other players' cars, bumping and server results, for up to 4 players.
+The code is in `js/net.js`, the online parts of `js/game.js` and `../server/server.js`,
+hosted on Render via `../render.yaml`. Stages 3 and 4 (AI rivals online, reconnects, host
+hand-over, online championships) are still to do. Where the built version differs from
+this plan:
+
+- Online races are humans only, with no AI rivals yet.
+- The pause key opens a menu with **Leave race**, but the race keeps running.
+- Leaving mid-race removes that player's car straight away, rather than pulling it over.
+- Pinging uses a 2-second interval, and remote cars are drawn 120 ms in the past.
 
 ---
 

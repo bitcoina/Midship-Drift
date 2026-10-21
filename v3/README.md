@@ -49,6 +49,11 @@ sparks for a **TURBO**, or on orange sparks for a **SUPER TURBO**.
 - **Championship:** five courses in a row against nine cartoon rivals. Finish in the top
   three to go through to the next one. Races are four laps. Points go 15-12-10-8-6-5-4-3-2-1.
 - **Single race:** pick any course. Best laps are saved in your browser.
+- **Online race:** race up to three friends, each on their own phone or computer. One of
+  you makes a room and reads out the four-letter code; the others join with it. Everyone
+  picks a different driver, the host picks the course and starts. Online races are just
+  the players, with no computer rivals yet. The first race after a quiet spell can take up
+  to a minute to connect while the free server wakes up.
 - **Garage:** pick the MR2's paint.
 
 The faces across the top are the running order, leader on the left. Your face flashes. A
@@ -101,7 +106,26 @@ big helmeted heads, with a black outline from a fattened back-face copy of each 
 | `js/models.js` | The cartoon car models |
 | `js/scene.js` | Builds the road, rails, decks, pillars, ground and scenery for a course |
 | `js/audio.js` | WebAudio engine note, tyre squeal, impacts and the music loop |
+| `js/net.js` | Online play: server connection, clock sync and smoothing other players' cars |
 | `js/game.js` | Physics, drifting, AI, camera, HUD and menus |
+| `../server/` | The online relay server (Node.js), hosted on Render. See [MULTIPLAYER.md](MULTIPLAYER.md) |
+
+### Online play
+
+Each player's game drives its own car and sends its position to a small relay server
+20 times a second; the server passes it on to the others and decides the finishing
+order. [MULTIPLAYER.md](MULTIPLAYER.md) explains the design.
+
+To try it on one computer, run the server locally and open the game in two windows:
+
+```bash
+cd server
+npm install
+node server.js
+```
+
+Then open `v3/index.html?server=ws://localhost:8080` (served from a local web server, not
+as a file) in each window.
 
 ### Adding a course
 
