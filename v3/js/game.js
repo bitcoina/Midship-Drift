@@ -47,11 +47,17 @@
   const faceURL = FACES.map(f => f[1].toDataURL());
 
   // ---------------------------------------------------------------- course cache
-  const built = {};
+  // Tracks are cheap and the course list draws all of them; scenery is built only for
+  // courses that are actually raced.
+  const tracks = {}, built = {};
+  function trackOf(idx) {
+    if (!tracks[idx]) tracks[idx] = Track.build(COURSES[idx]);
+    return tracks[idx];
+  }
   function course(idx) {
     if (!built[idx]) {
-      const c = COURSES[idx], th = THEMES[c.theme], T = Track.build(c);
-      built[idx] = { c, th, T, sc: Scene.build(T, th, c.id), mesh: null };
+      const c = COURSES[idx], th = THEMES[c.theme], T = trackOf(idx);
+      built[idx] = { c, th, T, sc: Scene.build(T, th, c.id, c), mesh: null };
     }
     return built[idx];
   }
@@ -108,7 +114,7 @@
       msgs: [], parts: [], cam: null, fogCol: Scene.rgb(B.th.fog), sky: null, lastLap: 0, gridShown: false,
     };
     race.sky = skyCanvas(B.th);
-    race.signS = race.player.s + 24;
+    if (!opts.attract && !opts.garage) Sound.setTune(CUPS[1].courses.includes(idx) ? 1 : 0);
     race.cam = { a: 0, y: null };
     mode = opts.attract ? 'race' : opts.garage ? 'garage' : 'intro';
     if (opts.attract) race.goT = 999;
@@ -184,7 +190,7 @@
     if (c.human && clean && c.driftT > 0.75) {
       c.boost = Math.min(2.2, 0.5 + c.driftT * 0.55);
       msg(c.driftT > 1.8 ? 'SUPER TURBO!' : 'TURBO!', 1.1, c.driftT > 1.8 ? '#ff7a2a' : '#5ad1ff', 150);
-      Sound.blip();
+      Sound.turbo();
     }
     if (clean && c.drift) c.recover = 0.35;
     else if (c.drift) c.driftLock = true; // keep holding and it won't re-drift until you let go
@@ -267,6 +273,8 @@
     if (c.air) {
       c.vy -= G * dt; c.y += c.vy * dt;
       if (c.y <= ground) {
+        // Coming down inside a jump gap, or well below the far edge, means a fall.
+        if (T.jumpAt(c.s) || (T.jumpAt(c.s - 6) && ground - c.y > 2)) return fall(c);
         const hit = roadVy - c.vy;
         c.y = ground; c.vy = roadVy; c.air = false;
         if (c.human && hit > 4) Sound.land(Math.min(1, hit / 25));
@@ -274,7 +282,19 @@
       }
     } else if (roadVy < c.vy - G * dt * 1.5) {
       c.air = true; c.vy -= G * dt; c.y += c.vy * dt;
-    } else { c.vy = roadVy; c.y = ground; }
+      if (c.human && c.vy > 6) Sound.whoosh();
+    } else if (T.jumpAt(c.s)) fall(c);
+    else { c.vy = roadVy; c.y = ground; }
+  }
+
+  // A car that missed a jump is put back on the road before the ramp, rolling.
+  function fall(c) {
+    const T = race.T, j = T.jumpAt(c.s) || T.jumpAt(c.s - 6);
+    const back = ((((c.s - j.s) % T.L) + T.L) % T.L) + 70;
+    c.s -= back; c.d = 0; c.h = c.phi = 0; c.v = 24; c.vy = 0; c.air = false; c.boost = 0;
+    if (c.drift) endDrift(c);
+    const i = T.at(c.s, tB); c.y = i.y;
+    if (c.human) { msg('OOPS!', 1.4, '#ff3f6c', 100); Sound.fall(); race.cam.y = null; }
   }
 
   function collide() {
@@ -357,7 +377,7 @@
         const before = R.countT;
         R.countT += dt;
         for (const at of [1, 2]) if (before < at && R.countT >= at) Sound.beep(false);
-        if (R.countT >= 3) { mode = 'race'; R.goT = 0; R.clock = 0; Sound.beep(true); msg('GO!', 1, '#7dff5a', 70); }
+        if (R.countT >= 3) { mode = 'race'; R.goT = 0; R.clock = 0; Sound.beep(true); Sound.cheer(); msg('GO!', 1, '#7dff5a', 70); }
       }
       if (R.goT >= 0) R.goT += dt;
     }
@@ -414,8 +434,10 @@
       p.wrongT = Math.cos(p.phi) < -0.2 && p.v > 4 ? p.wrongT + dt : 0;
       const top = V_TOP * (p.boost > 0 ? 1.18 : 1), gears = [0, 17, 31, 45, 59, 73, 100];
       let g = 0; while (g < gears.length - 2 && p.v > gears[g + 1]) g++;
-      Sound.setEngine(clamp((p.v - gears[g]) / (gears[g + 1] - gears[g]), 0, 1) * 0.8 + p.v / top * 0.2, keys.up ? 1 : 0);
+      Sound.setEngine(clamp((p.v - gears[g]) / (gears[g + 1] - gears[g]), 0, 1) * 0.8 + p.v / top * 0.2, keys.up || keys.drift ? 1 : 0, g, clamp(p.v / V_TOP, 0, 1));
       Sound.setSkid(!p.air && p.v > 12 ? clamp((Math.abs(p.h - p.phi) - 0.12) * 2, 0, 1) : 0);
+      const inTunnel = !!R.T.tunnel[R.T.at(p.s, tC).i];
+      if (inTunnel !== !!R.inTunnel) { R.inTunnel = inTunnel; Sound.setTunnel(inTunnel); }
     }
     if (mode === 'finish') {
       R.finishT += dt;
@@ -434,6 +456,7 @@
   function finishRace() {
     const p = race.player;
     mode = 'finish'; race.finishT = 0;
+    Sound.cheer(); Sound.setTunnel(false);
     p.human = false; p.skill = 0.9; endDrift(p);
     Sound.setSkid(0);
     const key = race.B.c.id;
@@ -449,7 +472,7 @@
     const t = (Net.now() - R.online.startAt) / 1000;
     if (t < -3) { mode = 'intro'; R.introT = clamp(t + 7.2, 0, 4.2); }
     else if (t < 0) { mode = 'countdown'; R.countT = t + 3; }
-    else if (R.goT < 0) { mode = 'race'; msg('GO!', 1, '#7dff5a', 70); }
+    else if (R.goT < 0) { mode = 'race'; Sound.cheer(); msg('GO!', 1, '#7dff5a', 70); }
     const beeps = t >= 0 ? 4 : t >= -1 ? 3 : t >= -2 ? 2 : t >= -3 ? 1 : 0;
     while (R.beep < beeps) Sound.beep(++R.beep === 4);
     if (t >= 0) { R.goT = t; R.clock = t; }
@@ -534,6 +557,17 @@
       sg.fillStyle = th.sun.col;
       for (let o = sx; o < W + th.sun.r; o += 512) { sg.beginPath(); sg.arc(Math.round(o), Math.round(horizon - 96 + th.sun.y), th.sun.r, 0, Math.PI * 2); sg.fill(); }
     }
+    if (R.flash > 0) {
+      // a lightning bolt across the sky while the flash lasts
+      sg.fillStyle = `rgba(230,230,255,${(0.75 * R.flash).toFixed(2)})`; sg.fillRect(0, 0, W, horizon);
+      sg.fillStyle = '#ffffff';
+      let bx = R.bolt, by = 0;
+      while (by < horizon - 30) {
+        const nx = bx + (Math.random() - 0.5) * 14, ny = by + 6 + Math.random() * 8;
+        sg.fillRect(Math.round(Math.min(bx, nx)), Math.round(by), Math.max(1, Math.round(Math.abs(nx - bx))), Math.round(ny - by));
+        bx = nx; by = ny;
+      }
+    }
     if (sc.near) for (let x = -(((scroll * 1.4) % 512 + 512) % 512); x < W; x += 512) sg.drawImage(sc.near, Math.round(x), Math.round(horizon - 120));
     for (let x = -((scroll % 512 + 512) % 512); x < W; x += 512) sg.drawImage(sc.far, Math.round(x), Math.round(horizon - 94));
   }
@@ -546,6 +580,15 @@
     const R = race;
     const view = camera(dt);
     sg.clearRect(0, 0, W, H);
+    // Storms: an occasional lightning flash, with the thunder a moment later.
+    if (R.th.storm) {
+      R.flash = Math.max(0, (R.flash || 0) - dt * 3.5);
+      R.nextFlash = (R.nextFlash === undefined ? 4 : R.nextFlash) - dt;
+      if (R.nextFlash < 0) {
+        R.flash = 1; R.bolt = Math.random() * W; R.nextFlash = 5 + Math.random() * 9;
+        if (!R.attract) setTimeout(() => Sound.thunder(), 200 + Math.random() * 900);
+      }
+    }
     // The view widens with speed, and a little more on a turbo, so going fast feels fast.
     const p = R.player, wide = mode === 'garage' || mode === 'intro' ? 0 : clamp(p.v / V_TOP, 0, 1.2) * 0.17 + (p.boost > 0 ? 0.07 : 0);
     R.fov = R.fov === undefined ? 0.95 + wide : R.fov + (0.95 + wide - R.fov) * Math.min(1, dt * 3);
@@ -562,8 +605,10 @@
       const up = [i.rx * sb, cb, i.rz * sb], F = [p.F[0], i.slope, p.F[2]];
       const fl = Math.hypot(...F); F[0] /= fl; F[1] /= fl; F[2] /= fl;
       const Rr = [F[1] * up[2] - F[2] * up[1], F[2] * up[0] - F[0] * up[2], F[0] * up[1] - F[1] * up[0]];
-      GLR.basis(SH, p.x, p.ground + 0.08, p.z, [-Rr[0], -Rr[1], -Rr[2]], up, F);
-      GLR.draw(shadowMesh, SH);
+      if (!R.T.jumpAt(c.s)) {
+        GLR.basis(SH, p.x, p.ground + 0.08, p.z, [-Rr[0], -Rr[1], -Rr[2]], up, F);
+        GLR.draw(shadowMesh, SH);
+      }
       GLR.basis(MAT, p.x, p.y, p.z, p.L, p.U, p.F);
       GLR.draw(c.mesh.line, MAT, -1);
       GLR.draw(c.mesh.main, MAT, 1);
@@ -571,16 +616,6 @@
 
     dyn.n = 0;
     const rects = R.B.sc.rects;
-    // The winged START sign hovers just ahead of the grid, then flaps away at the green light.
-    const st = R.T.at(R.signS, tC);
-    let sy = st.y + 4.6 + Math.sin(R.t * 2.2) * 0.35, sx = st.x, sz = st.z;
-    let frame = [0, 1, 2, 3, 2, 1][Math.floor(R.t * 7) % 6];
-    if (R.goT >= 0 && !R.attract) {
-      const t = R.goT;
-      sy += 5 * t + 9 * t * t; sx += st.fx * 14 * t; sz += st.fz * 14 * t;
-      frame = [0, 1, 2, 3, 2, 1][Math.floor(t * 22) % 6];
-    }
-    if (!R.attract && mode !== 'garage' && R.goT < 3.5) GLR.pushSprite(dyn, sx, sy, sz, 17, 9, rects[`sign${frame}`]);
     for (const q of R.parts) {
       const k = q.t / q.life, s = q.kind.startsWith('spark') ? q.size : q.size * (1 - k * 0.6);
       GLR.pushSprite(dyn, q.x, q.y - s / 2, q.z, s, s, rects[q.kind]);
@@ -588,110 +623,183 @@
     GLR.drawSprites(dyn);
 
     sg.drawImage(glc, 0, 0);
+    if (R.th.storm) {
+      if (R.flash > 0) { sg.fillStyle = `rgba(220,220,255,${(0.28 * R.flash).toFixed(2)})`; sg.fillRect(0, 0, W, H); }
+      if (!R.T.tunnel[R.T.at(R.player.s, tC).i]) {
+        sg.fillStyle = 'rgba(170,185,255,0.55)';
+        for (let k = 0; k < 70; k++) {
+          const x = Math.random() * (W + 40), y = Math.random() * H;
+          for (let q = 0; q < 6; q++) sg.fillRect(Math.round(x - q), Math.round(y + q * 2), 1, 2);
+        }
+      }
+    }
     if (!R.attract && mode !== 'garage') hud();
   }
 
   // ---------------------------------------------------------------- HUD
-  const { text3, text3Width } = Art, big = Toons.bigText;
+  // Laid out like the arcade original: the running order of faces across the top on a
+  // black chequer, time and stage boxes under it on the left, the course map on the
+  // right, speed bottom left and the big position with its lap lamps bottom right.
+  const { text3 } = Art, txt = Toons.text;
   const fmt = t => {
     if (!isFinite(t)) return "-'--\"--";
     const m = Math.floor(t / 60), s = Math.floor(t % 60), c = Math.floor((t * 100) % 100);
     return `${m}'${String(s).padStart(2, '0')}"${String(c).padStart(2, '0')}`;
   };
+  const LABEL = '#5aff6a', NUM = '#ffe14a';
+  const BANNERS = [0, 1, 2, 3].map(f => Toons.startBanner(f)), LAMPS = [0, 1, 2, 3, 4].map(k => Toons.startLights(k));
+
+  // The winged START banner hangs over the grid with its lamp bar under it: the lamps
+  // light red through the countdown and blue at GO, when it flaps away off the top.
+  function startBanner() {
+    const R = race;
+    if (R.attract || mode === 'intro' || R.goT > 1.2) return;
+    const t = Math.max(0, R.goT), flap = [0, 1, 2, 3, 2, 1][Math.floor(R.t * (R.goT >= 0 ? 22 : 7)) % 6];
+    const img = BANNERS[flap], x = Math.round(W / 2 - img.width / 2), y = Math.round(44 + Math.sin(R.t * 2.2) * 2 - 120 * t - 160 * t * t);
+    const lamps = R.goT >= 0 ? 4 : mode === 'countdown' ? Math.min(3, Math.floor(R.countT) + 1) : 0;
+    sg.drawImage(img, x, y);
+    sg.drawImage(LAMPS[lamps], Math.round(W / 2 - 48), y + img.height - 4);
+  }
+
+  function checker(x, y, w, h, a, b) {
+    sg.fillStyle = a; sg.fillRect(x, y, w, h);
+    sg.fillStyle = b;
+    for (let yy = 0; yy < h; yy += 2) for (let xx = (yy / 2) % 2 ? 0 : 2; xx < w; xx += 4) sg.fillRect(x + xx, y + yy, 2, 2);
+  }
 
   function hud() {
     const R = race, p = R.player, order = R.order || R.cars;
-    // position bar of faces, leader on the left
-    const n = order.length, fw = 24, bx = Math.round(W / 2 - (n * fw) / 2);
-    sg.fillStyle = 'rgba(16,18,58,0.72)';
-    sg.fillRect(bx - 4, 2, n * fw + 6, 34);
+    startBanner();
+
+    // ---- the faces band
+    const n = order.length, slot = Math.min(32, Math.floor((W - 10) / n)), bw = slot * n + 6, bx = Math.round((W - bw) / 2);
+    sg.fillStyle = '#000'; sg.fillRect(bx - 1, 1, bw + 2, 40);
+    checker(bx, 2, bw, 38, '#08080c', '#24242e');
+    sg.fillStyle = '#6a6a7a'; sg.fillRect(bx, 2, bw, 1); sg.fillRect(bx, 39, bw, 1);
     order.forEach((c, k) => {
-      const x = bx + k * fw, me = c === p;
-      if (me) { sg.fillStyle = (R.t * 4) % 2 < 1.4 ? '#ffd23f' : '#ff3f6c'; sg.fillRect(x - 2, 3, fw, 26); }
-      sg.drawImage(FACES[c.di][c.mood === 1 ? 1 : c.mood === -1 ? 2 : 0], x, 5);
-      text3(sg, String(k + 1), x + 11 - text3Width(String(k + 1)) / 2, 29, me ? '#ffd23f' : '#ffffff');
-      if (c.finished) { sg.fillStyle = '#fff'; for (let q = 0; q < 3; q++) sg.fillRect(x + 17 + (q % 2), 27 + q, 1, 1); }
+      const x = bx + 3 + k * slot, me = c === p, fx = x + Math.floor((slot - 22) / 2);
+      if (me) checker(x, 3, slot, 36, '#b8901a', '#ffd23f');
+      sg.drawImage(FACES[c.di][c.mood === 1 ? 1 : c.mood === -1 ? 2 : 0], fx, 4);
+      txt(sg, String(k + 1), x + slot / 2, 29, me ? '#ffffff' : NUM, { align: 'center' });
+      if (c.finished) {
+        for (let q = 0; q < 4; q++) for (let r = 0; r < 3; r++) { sg.fillStyle = (q + r) % 2 ? '#000' : '#fff'; sg.fillRect(fx + 16 + q * 2, 4 + r * 2, 2, 2); }
+      }
     });
 
-    // big position, lap and time
-    const pos = p.pos, suf = ORD(pos).slice(String(pos).length);
-    const pw = big(sg, String(pos), 8, 42, pos <= 3 ? '#ffd23f' : '#ffffff', 5);
-    big(sg, suf, 10 + pw, 42, pos <= 3 ? '#ffd23f' : '#ffffff', 2);
-    const lap = Math.min(R.laps, Math.max(1, (p.lapsDone || 0) + 1));
-    big(sg, `LAP ${lap}/${R.laps}`, W - 8, 42, '#ffffff', 2, 'right');
-    big(sg, fmt(p.finished ? p.finishTime : R.clock), W - 8, 56, '#7fe3ff', 1, 'right');
-    if (isFinite(p.best)) big(sg, `BEST ${fmt(p.best)}`, W - 8, 66, '#ffd23f', 1, 'right');
-
-    // speed
-    const kmh = Math.round(p.v * 3.6);
-    // On touch screens the pedal strip covers the bottom right, so the speed moves up.
-    const sy = touchShown ? 80 : H - 22;
-    big(sg, String(kmh), W - 34, sy, p.boost > 0 ? '#5ad1ff' : '#ffffff', 3, 'right');
-    big(sg, 'KM/H', W - 8, sy + 6, '#ffd23f', 1, 'right');
-
-    // drift meter
-    if (p.drift || p.boost > 0) {
-      const k = p.boost > 0 ? p.boost / 2.2 : clamp(p.driftT / 1.8, 0, 1);
-      const col = p.boost > 0 ? '#5ad1ff' : p.driftT > 1.8 ? '#ff7a2a' : p.driftT > 0.75 ? '#5ad1ff' : '#ffd23f';
-      const my = touchShown ? H - 58 : H - 30; // clear of the pause button on touch screens
-      big(sg, p.boost > 0 ? 'BOOST' : 'DRIFT', W / 2, my, col, 2, 'center');
-      sg.fillStyle = '#000'; sg.fillRect(W / 2 - 31, my + 15, 62, 7);
-      sg.fillStyle = col; sg.fillRect(W / 2 - 30, my + 16, Math.round(60 * k), 5);
+    // ---- time, lap time and the championship stage boxes
+    const lapT = p.finished ? p.lapTimes[p.lapTimes.length - 1] : (R.goT >= 0 ? R.clock - p.lapStart : 0);
+    txt(sg, 'TIME', 6, 44, LABEL); txt(sg, fmt(p.finished ? p.finishTime : R.clock), 36, 44, '#ffffff');
+    txt(sg, 'LAP', 6, 54, LABEL); txt(sg, fmt(lapT), 36, 54, '#ffffff');
+    if (champ && W > 330) {
+      const sx = 92;
+      txt(sg, 'STG', sx, 44, '#ff7ad8');
+      champ.courses.forEach((_, k) => {
+        const x = sx + 20 + k * 11, done = k < champ.round, now = k === champ.round;
+        sg.fillStyle = '#000'; sg.fillRect(x - 1, 42, 11, 11);
+        sg.fillStyle = done ? '#2a2a10' : now ? '#ffffff' : '#3a2a34'; sg.fillRect(x, 43, 9, 9);
+        if (done) { sg.fillStyle = '#ffd23f'; sg.fillRect(x + 2, 44, 5, 3); sg.fillRect(x + 3, 47, 3, 2); sg.fillRect(x + 2, 49, 5, 1); }
+        else text3(sg, String(k + 1), x + 3, 45, now ? '#c81e1e' : '#7a6a74');
+      });
     }
 
     minimap();
 
-    // countdown and messages
-    if (mode === 'countdown') {
-      const left = 3 - Math.floor(R.countT);
-      big(sg, String(left), W / 2, 64, '#ffffff', 6, 'center');
+    // ---- speed and position. Touch controls cover both bottom corners, so on a touch
+    // screen the position, lap lamps and speed stack down the left under the time.
+    const kmh = String(Math.round(p.v * 3.6)), pos = p.pos, suf = ORD(pos).slice(String(pos).length);
+    const posCol = pos <= 3 ? '#ffe14a' : '#ffffff';
+    const lampW = 10, lampsW = R.laps * (lampW + 2) + 22;
+    const posW = Toons.textWidth(String(pos), 5) + 12 + Toons.textWidth(suf, 2) + 6;
+    let px, py, sx, sy;
+    if (touchShown) { px = 8; py = 66; sx = 8; sy = 121; }
+    else { px = W - 8 - Math.max(lampsW, posW); py = H - 54; sx = 8; sy = H - 28; }
+    const pw = txt(sg, String(pos), px, py, posCol, { s: 5, italic: true, shadow: '#7a3a00' });
+    txt(sg, suf, px + pw + 2, py + 21, posCol, { s: 2, italic: true });
+    // lap lamps: completed laps lit red, the current one blinking
+    const ly = py + 39;
+    txt(sg, 'LAP', px, ly + 1, '#7fe3ff');
+    const done = Math.min(R.laps, p.lapsDone || 0);
+    for (let k = 0; k < R.laps; k++) {
+      const x = px + 20 + k * (lampW + 2), on = k < done, cur = k === done && !p.finished && Math.floor(R.t * 3) % 2;
+      sg.fillStyle = '#000'; sg.fillRect(x - 1, ly - 1, lampW + 2, 11);
+      sg.fillStyle = on ? '#ff3a3a' : cur ? '#ffd23f' : '#3a1a1a'; sg.fillRect(x, ly, lampW, 9);
+      text3(sg, String(k + 1), x + 4, ly + 2, on || cur ? '#ffffff' : '#7a4a4a');
     }
+    if (touchShown) {
+      const kw = txt(sg, kmh, sx, sy, p.boost > 0 ? '#5ad1ff' : '#ffffff', { s: 2, italic: true });
+      txt(sg, 'KM/H', sx + kw + 3, sy + 7, NUM, { italic: true });
+    } else {
+      const kw = txt(sg, kmh, sx, sy, p.boost > 0 ? '#5ad1ff' : '#ffffff', { s: 3, italic: true });
+      txt(sg, 'KM/H', sx + kw + 3, sy + 13, NUM, { italic: true });
+    }
+
+    // ---- drift meter
+    if (p.drift || p.boost > 0) {
+      const k = p.boost > 0 ? p.boost / 2.2 : clamp(p.driftT / 1.8, 0, 1);
+      const col = p.boost > 0 ? '#5ad1ff' : p.driftT > 1.8 ? '#ff7a2a' : p.driftT > 0.75 ? '#5ad1ff' : '#ffd23f';
+      const my = touchShown ? H - 58 : H - 32; // clear of the pause button on touch screens
+      txt(sg, p.boost > 0 ? 'BOOST' : 'DRIFT', W / 2, my, col, { s: 2, italic: true, align: 'center' });
+      sg.fillStyle = '#000'; sg.fillRect(W / 2 - 31, my + 16, 62, 7);
+      sg.fillStyle = col; sg.fillRect(W / 2 - 30, my + 17, Math.round(60 * k), 5);
+    }
+
+    // ---- intro, messages, finish
     if (mode === 'intro') {
-      big(sg, R.B.c.name.toUpperCase(), W / 2, 70, '#ffd23f', 3, 'center');
-      big(sg, `${R.T.events.length} BRIDGE${R.T.events.length === 1 ? '' : 'S'} - ${R.laps} LAPS`, W / 2, 92, '#ffffff', 1, 'center');
+      const T = R.T, bits = [`${T.events.length} BRIDGE${T.events.length === 1 ? '' : 'S'}`];
+      const tunnels = T.tunnel.reduce((a, v, i) => a + (v && !T.tunnel[T.W(i - 1)] ? 1 : 0), 0);
+      if (tunnels) bits.push(`${tunnels} TUNNEL${tunnels === 1 ? '' : 'S'}`);
+      if (T.jumps.length) bits.push(`${T.jumps.length} JUMP`);
+      bits.push(`${R.laps} LAPS`);
+      txt(sg, R.B.c.name.toUpperCase(), W / 2, 76, '#ffe14a', { s: W > 330 ? 3 : 2, italic: true, align: 'center', shadow: '#c81e1e' });
+      txt(sg, bits.join(' - '), W / 2, 104, '#ffffff', { align: 'center' });
     }
     for (const m of R.msgs) {
-      const pop = Math.min(1, m.t * 8), s = m.text.length > 9 ? 3 : 4;
-      if (pop > 0.3) big(sg, m.text, W / 2, m.y - Math.round((1 - pop) * 6), m.col, s, 'center');
+      const pop = Math.min(1, m.t * 8), s = m.text.length > 9 ? 2 : 3;
+      if (pop > 0.3) txt(sg, m.text, W / 2, m.y - Math.round((1 - pop) * 6), m.col, { s, italic: true, align: 'center', shadow: '#000' });
     }
-    if (p.wrongT > 1 && Math.floor(R.t * 3) % 2) big(sg, 'WRONG WAY!', W / 2, 110, '#ff3f6c', 3, 'center');
+    if (p.wrongT > 1 && Math.floor(R.t * 3) % 2) txt(sg, 'WRONG WAY!', W / 2, 110, '#ff3f6c', { s: 3, italic: true, align: 'center' });
     if (mode === 'finish') {
-      big(sg, 'GOAL!', W / 2, 74, '#ffd23f', 6, 'center');
-      big(sg, `YOU FINISHED ${ORD(p.pos)}`, W / 2, 112, '#ffffff', 2, 'center');
+      txt(sg, 'GOAL!', W / 2, 74, '#ffe14a', { s: 5, italic: true, align: 'center', shadow: '#c81e1e' });
+      txt(sg, `YOU FINISHED ${ORD(p.pos)}`, W / 2, 118, '#ffffff', { s: 2, italic: true, align: 'center' });
     }
   }
 
+  // The course map, top right, with each car's running position next to its dot.
   let mapCache = null;
   function minimap() {
-    const R = race, T = R.T, size = 58, [x0, x1, z0, z1] = R.B.sc.bounds;
-    const sc = (size - 6) / Math.max(x1 - x0, z1 - z0), ox = 8, oy = H - size - 6;
-    const mx = x => ox + 3 + (x - x0) * sc + ((size - 6) - (x1 - x0) * sc) / 2;
-    const mz = z => oy + 3 + (z1 - z) * sc + ((size - 6) - (z1 - z0) * sc) / 2;
+    const R = race, T = R.T, mw = W > 330 ? 78 : 62, mh = Math.round(mw * 0.8), [x0, x1, z0, z1] = R.B.sc.bounds;
+    const sc = Math.min((mw - 8) / (x1 - x0), (mh - 8) / (z1 - z0)), ox = W - mw - 6, oy = 43;
+    const mx = x => ox + mw / 2 + (x - (x0 + x1) / 2) * sc;
+    const mz = z => oy + mh / 2 - (z - (z0 + z1) / 2) * sc;
     if (!mapCache || mapCache.idx !== R.idx || mapCache.W !== W) {
       const [c, g] = Art.canvas(W, H);
-      g.fillStyle = 'rgba(16,18,58,0.55)'; g.fillRect(ox, oy, size, size);
-      // draw low road first, raised road on top so the crossings read
+      // low road first, raised road on top so the crossings read
       const segs = [];
       for (let i = 0; i < T.n; i += 2) segs.push([i, T.h[i]]);
       segs.sort((a, b) => a[1] - b[1]);
       for (const [i] of segs) {
+        if (T.gapF[i]) continue;
         const j = T.W(i + 2), raised = T.h[i] > 4;
-        g.strokeStyle = '#000'; g.lineWidth = 4; g.beginPath(); g.moveTo(mx(T.xs[i]), mz(T.zs[i])); g.lineTo(mx(T.xs[j]), mz(T.zs[j])); g.stroke();
-        g.strokeStyle = raised ? '#ffffff' : '#b9b4d6'; g.lineWidth = 2; g.beginPath(); g.moveTo(mx(T.xs[i]), mz(T.zs[i])); g.lineTo(mx(T.xs[j]), mz(T.zs[j])); g.stroke();
+        g.strokeStyle = '#000'; g.lineWidth = 5; g.beginPath(); g.moveTo(mx(T.xs[i]), mz(T.zs[i])); g.lineTo(mx(T.xs[j]), mz(T.zs[j])); g.stroke();
+        g.strokeStyle = T.tunnel[i] ? '#6a6070' : raised ? '#c8a878' : '#1a1a20'; g.lineWidth = 3;
+        g.beginPath(); g.moveTo(mx(T.xs[i]), mz(T.zs[i])); g.lineTo(mx(T.xs[j]), mz(T.zs[j])); g.stroke();
       }
       mapCache = { idx: R.idx, W, c };
     }
     sg.drawImage(mapCache.c, 0, 0);
+    const order = R.order || R.cars;
     for (const c of R.cars) {
       const p = c.pose; if (!p) continue;
-      sg.fillStyle = c === R.player ? '#ffd23f' : DRIVERS[c.di].color;
-      const s = c === R.player ? 3 : 2;
-      sg.fillRect(Math.round(mx(p.x) - s / 2), Math.round(mz(p.z) - s / 2), s, s);
+      const x = Math.round(mx(p.x)), y = Math.round(mz(p.z)), me = c === R.player;
+      if (me && Math.floor(R.t * 4) % 2) continue;
+      sg.fillStyle = '#000'; sg.fillRect(x - 2, y - 2, 4, 4);
+      sg.fillStyle = me ? '#ffffff' : DRIVERS[c.di].color; sg.fillRect(x - 1, y - 1, 2, 2);
+      if (!me) text3(sg, String(order.indexOf(c) + 1), x + 3, y - 5, DRIVERS[c.di].color);
     }
   }
 
   // ---------------------------------------------------------------- menus
-  const panels = ['title', 'courses', 'garage', 'results', 'pause', 'online'];
+  const panels = ['title', 'cups', 'courses', 'garage', 'results', 'pause', 'online'];
   function show(id) {
     for (const p of panels) $('#' + p).hidden = p !== id;
     const first = id && $(`#${id} button`);
@@ -736,8 +844,34 @@
       list.append(b);
     });
   }
+  // The championship picker: one button per cup, with its five course maps.
+  function cupList() {
+    const list = $('#cup-list');
+    list.innerHTML = '';
+    CUPS.forEach((cup, ci) => {
+      const b = document.createElement('button');
+      b.className = 'cup';
+      b.innerHTML = '<span class="c-name"></span><span class="c-blurb"></span><span class="cup-maps"></span>';
+      b.querySelector('.c-name').textContent = cup.name;
+      b.querySelector('.c-blurb').textContent = cup.blurb;
+      for (const idx of cup.courses) {
+        const cv = document.createElement('canvas');
+        cv.width = 64; cv.height = 48; cv.className = 'c-map'; cv.setAttribute('aria-hidden', 'true');
+        drawThumb(cv, idx);
+        b.querySelector('.cup-maps').append(cv);
+      }
+      b.addEventListener('click', () => {
+        champ = { cup: ci, courses: cup.courses, round: 0, points: {} };
+        startRace(cup.courses[0]);
+      });
+      list.append(b);
+    });
+  }
+
   function drawThumb(cv, idx) {
-    const { T, sc } = course(idx), g = cv.getContext('2d'), [x0, x1, z0, z1] = sc.bounds;
+    const T = trackOf(idx), g = cv.getContext('2d');
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = 0; i < T.n; i++) { x0 = Math.min(x0, T.xs[i]); x1 = Math.max(x1, T.xs[i]); z0 = Math.min(z0, T.zs[i]); z1 = Math.max(z1, T.zs[i]); }
     const s = Math.min(58 / (x1 - x0), 42 / (z1 - z0));
     const X = x => 32 + (x - (x0 + x1) / 2) * s, Z = z => 24 - (z - (z0 + z1) / 2) * s;
     const segs = [];
@@ -787,7 +921,7 @@
     $('#results-title').textContent = `${R.B.c.name}: you finished ${ORD(pos).toLowerCase()}`;
     const qualified = pos <= 3;
     $('#results-sub').textContent = champ
-      ? (qualified ? (champ.round < COURSES.length - 1 ? 'Top three! On to the next course.' : 'You made it through every course!') : 'Only the top three go through. Have another go.')
+      ? (qualified ? (champ.round < champ.courses.length - 1 ? 'Top three! On to the next course.' : 'You made it through every course!') : 'Only the top three go through. Have another go.')
       : (pos === 1 ? 'A winner! Leo does a victory doughnut.' : 'Have another go and drift harder.');
     const t = $('#results-table');
     t.innerHTML = `<thead><tr><th>POS</th><th></th><th>DRIVER</th><th>TIME</th><th>BEST LAP</th>${champ ? '<th>PTS</th>' : ''}</tr></thead>`;
@@ -804,9 +938,9 @@
     acts.innerHTML = '';
     const add = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', fn); acts.append(b); };
     if (champ) {
-      if (qualified && champ.round < COURSES.length - 1) add('Next course', () => { champ.round++; startRace(champ.round); });
+      if (qualified && champ.round < champ.courses.length - 1) add('Next course', () => { champ.round++; startRace(champ.courses[champ.round]); });
       else if (qualified) add('Final standings', standings);
-      else add('Try again', () => startRace(champ.round));
+      else add('Try again', () => startRace(champ.courses[champ.round]));
       add('Quit', toTitle);
     } else {
       add('Race again', () => startRace(R.idx));
@@ -819,7 +953,8 @@
   function standings() {
     const rows = DRIVERS.map((d, i) => [i, champ.points[i] || 0]).sort((a, b) => b[1] - a[1]);
     const pos = rows.findIndex(r => r[0] === 0) + 1;
-    $('#results-title').textContent = pos === 1 ? 'Leo is the champion!' : `Championship: ${ORD(pos).toLowerCase()} overall`;
+    const cup = CUPS[champ.cup].name;
+    $('#results-title').textContent = pos === 1 ? `Leo wins the ${cup}!` : `${cup}: ${ORD(pos).toLowerCase()} overall`;
     $('#results-sub').textContent = 'Final points after all five courses.';
     const t = $('#results-table');
     t.innerHTML = '<thead><tr><th>POS</th><th></th><th>DRIVER</th><th>POINTS</th></tr></thead>';
@@ -985,7 +1120,7 @@
     if (!b) return;
     Sound.init();
     switch (b.dataset.action) {
-      case 'champ': champ = { round: 0, points: {} }; startRace(0); break;
+      case 'champ': cupList(); show('cups'); break;
       case 'single': courseList(); show('courses'); break;
       case 'garage': garage(); break;
       case 'back': if (mode === 'garage') toTitle(); else show('title'); break;

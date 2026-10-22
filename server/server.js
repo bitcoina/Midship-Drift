@@ -9,7 +9,7 @@ const http = require('http');
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 8080;
-const MAX_PLAYERS = 4, LAPS = 4, FACES = 10, COURSES = 5;
+const MAX_PLAYERS = 4, LAPS = 4, FACES = 10, COURSES = 10;
 const START_DELAY = 8500;    // ms from Start to GO: flyover, then the 3-2-1 countdown
 const RESULTS_WAIT = 30000;  // ms after the first finisher before stragglers are cut off
 const STATE_BUDGET = 40;     // car states a player may send per second

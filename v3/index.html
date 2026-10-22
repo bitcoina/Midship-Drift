@@ -65,6 +65,11 @@
   button:disabled { opacity: 0.45; cursor: not-allowed; }
   #course-list { width: 100%; }
   .menu > button.course { font-family: var(--body); font-weight: 800; font-size: inherit; text-transform: none; letter-spacing: 0; padding: 10px 12px; }
+  #cup-list { width: 100%; }
+  .menu > button.cup { font-family: var(--body); font-weight: 800; font-size: inherit; text-transform: none; letter-spacing: 0; display: grid; gap: 4px; padding: 12px; }
+  .cup .c-name { font-family: var(--px); font-weight: 400; font-size: 13px; color: var(--hot); }
+  .cup-maps { display: flex; flex-wrap: wrap; gap: 4px; }
+  .cup-maps canvas { width: 52px; height: 39px; }
   .course { display: grid; grid-template-columns: auto 1fr auto; column-gap: 12px; row-gap: 0; align-items: center; }
   .c-num { grid-row: span 3; font-family: var(--px); color: #fff; background: var(--hot); border: 3px solid var(--ink); border-radius: 50%; width: 38px; height: 38px; display: grid; place-items: center; font-size: 13px; }
   .c-map { grid-row: span 3; grid-column: 3; width: 64px; height: 48px; }
@@ -171,6 +176,13 @@
       <button data-action="garage">Garage</button>
     </nav>
     <p class="hint">Arrows or WASD to drive. Hold accelerator and brake together to drift. P pauses, M toggles music.</p>
+  </section>
+
+  <section id="cups" class="panel" hidden aria-labelledby="cups-title">
+    <h2 id="cups-title">Choose a championship</h2>
+    <p class="sub">Five courses in a row. Finish in the top three to go through to the next one.</p>
+    <div id="cup-list" class="menu"></div>
+    <div class="menu"><button data-action="back">Back</button></div>
   </section>
 
   <section id="courses" class="panel" hidden aria-labelledby="courses-title">

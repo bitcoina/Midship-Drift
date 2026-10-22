@@ -4,8 +4,9 @@ A new game in the [Midship Drift](../) series. Versions [I](../v1/) and [II](../
 race on long point-to-point style loops. III races on short knotted circuits that twist
 back over and under themselves, so you drive across bridges over the road you were just
 on. Corners are tight enough that you need to drift. It's in the spirit of the late-80s
-"power slide" cabinets: cartoon racers, a winged START sign that flaps away when the race
-begins, and a row of driver faces across the top of the screen showing who's where.
+"power slide" cabinets: cartoon racers, a winged START banner whose lamps count you down
+before it flaps away, and a row of driver faces across the top of the screen on a black
+chequer showing who's where, with your laps lit up under your position.
 
 The star car is Leo's Mk3 MR2 roadster, roof down, with Leo in the yellow helmet.
 
@@ -46,8 +47,9 @@ sparks for a **TURBO**, or on orange sparks for a **SUPER TURBO**.
 
 ### Racing
 
-- **Championship:** five courses in a row against nine cartoon rivals. Finish in the top
-  three to go through to the next one. Races are four laps. Points go 15-12-10-8-6-5-4-3-2-1.
+- **Championship:** two cups of five courses each, against nine cartoon rivals. Finish in
+  the top three to go through to the next course. Races are four laps. Points go
+  15-12-10-8-6-5-4-3-2-1. The STG boxes at the top show your trophies so far.
 - **Single race:** pick any course. Best laps are saved in your browser.
 - **Online race:** race up to three friends, each on their own phone or computer. One of
   you makes a room and reads out the four-letter code; the others join with it. Everyone
@@ -61,13 +63,27 @@ driver grins when they gain a place and scowls when they lose one.
 
 ## Courses
 
-| # | Course | Bridges | What to expect |
-| --- | --- | --- | --- |
-| 1 | Pretzel Park | 1 | A seaside figure-eight with one big flyover |
-| 2 | Canyon Hook | 1 | A long desert sweeper that hooks back under itself |
-| 3 | Trefoil Peaks | 3 | A three-leaf knot through moonlit pines |
-| 4 | Spaghetti Junction | 6 | Neon flyovers stacked three decks high |
-| 5 | Lava Knot | 7 | Seven crossings over the lava fields |
+**Sunshine Cup**
+
+| # | Course | What to expect |
+| --- | --- | --- |
+| 1 | Pretzel Park | A seaside figure-eight with one big flyover |
+| 2 | Canyon Hook | A long desert sweeper that hooks back under itself |
+| 3 | Trefoil Peaks | A three-leaf knot through moonlit pines, three bridges |
+| 4 | Spaghetti Junction | Neon flyovers stacked three decks high |
+| 5 | Lava Knot | Seven crossings over the lava fields |
+
+**Thunder Cup**
+
+| # | Course | What to expect |
+| --- | --- | --- |
+| 6 | Seaspray Stilts | Roller-coaster stilts over the open sea, crest after crest |
+| 7 | Summit Switchback | Three hairpins up a steep mountain to the snowline, then a plunge down the far side |
+| 8 | Tunnel Vale | Rolling farmland with two tunnels bored through the hills, one of them curved |
+| 9 | Big Air Gorge | A sunset figure-eight with a gap jump right over the road below. Hit it at 110 km/h or more |
+| 10 | Thunder Spiral | A spiral that climbs into a lightning storm, then flies back over itself |
+
+Miss the jump and you fall into the gap: you are put back on the road before the ramp.
 
 ## How it works
 
@@ -85,6 +101,19 @@ draws the shape and the bridges appear on their own. Pillars go under every rais
 stretch, except where they would land on another road. The start line goes on the
 straightest stretch of the course.
 
+The Thunder Cup courses are drawn instead as a list of points, each with its own height,
+joined by a smooth spline, which is how they get their hills, undulations and switchbacks.
+They can also mark:
+
+- **Hillsides.** The ground rises to meet the road wherever it runs on the ground, is
+  cut away so it never covers an open road, and turns to rock on steep slopes and snow
+  above the snowline.
+- **Tunnels** between two points. The road gets walls, a roof and ceiling lamps, a
+  concrete portal at each end, and a hill heaped over the top. The engine echoes inside.
+- **Jumps** at a point: a hazard-striped kicker ramp, then a gap with no road. Inside the
+  gap the road profile drops away steeply, so anything fast enough flies over it, and a
+  car that comes down in the gap has fallen.
+
 **Cars** live in track coordinates: distance along the road, sideways offset, where the
 nose points and which way the car is actually travelling. When the last two differ the
 car is sliding. On grip, the steering sets how fast the car turns, and the car follows
@@ -99,13 +128,13 @@ big helmeted heads, with a black outline from a fattened back-face copy of each 
 | File | Contents |
 | --- | --- |
 | `js/art.js` | Pixel-art scenery, backdrops and the tiny font (shared with Midship Drift I) |
-| `js/toons.js` | Driver faces, the winged START sign, smoke and sparks |
+| `js/toons.js` | Driver faces, the START banner and lamps, smoke, sparks, newer scenery and the HUD font |
 | `js/courses.js` | Themes, course outlines, drivers and paints |
-| `js/track.js` | Track builder: resampling, curvature, banking and automatic bridges |
+| `js/track.js` | Track builder: outlines and drawn courses, curvature, banking, automatic bridges, tunnels and jumps |
 | `js/gl.js` | WebGL renderer: fogged flat-colour meshes and upright sprites |
 | `js/models.js` | The cartoon car models |
-| `js/scene.js` | Builds the road, rails, decks, pillars, ground and scenery for a course |
-| `js/audio.js` | WebAudio engine note, tyre squeal, impacts and the music loop |
+| `js/scene.js` | Builds the road, rails, decks, pillars, tunnels, hillsides, sea and scenery for a course |
+| `js/audio.js` | WebAudio engine, gears, tyres, wind, tunnel echo, jumps, thunder and two music loops |
 | `js/net.js` | Online play: server connection, clock sync and smoothing other players' cars |
 | `js/game.js` | Physics, drifting, AI, camera, HUD and menus |
 | `../server/` | The online relay server (Node.js), hosted on Render. See [MULTIPLAYER.md](MULTIPLAYER.md) |
@@ -142,3 +171,18 @@ Add an entry to `COURSES` in `js/courses.js`:
 
 The outline is scaled to `length` metres. Keep the tightest bends wider than about 25 m.
 The builder decides which branch goes over at each crossing, keeping bridges as low as it can.
+
+Or draw one as points, `[x, z, height]` in metres, which the road passes through in order:
+
+```js
+{
+  id: 'hill', name: 'Hill Loop', theme: 'meadow', startPoint: 0, terrain: true,
+  blurb: 'Up and over a hill, through a tunnel.',
+  points: [[0, 0, 0], [200, 0, 4], [320, 80, 14], [300, 220, 24], [150, 260, 20], [0, 220, 10], [-80, 100, 3]],
+  tunnels: [[4, 5]],                    // roofed over from point 4 to point 5
+  jumps: [{ at: 1.5, gap: 24, rise: 5 }], // a kicker halfway between points 1 and 2
+}
+```
+
+Keep points roughly evenly spaced (60 to 120 m apart), keep jumps on straights with room
+to land, and keep tunnels and jumps away from the start line and from crossings.

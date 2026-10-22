@@ -7,6 +7,7 @@
 //   height(u)  base road height in metres at lap fraction u (0 = start line)
 //   start      fraction of the outline for the start line (default: the straightest bit)
 //   mirror     run the outline the other way round
+// Thunder Cup courses are drawn as points instead; see the note above them.
 
 // Colours and scenery are shared with the earlier games.
 const THEMES = {
@@ -60,6 +61,59 @@ const THEMES = {
     scenery: [['ember', 4], ['boulderDark', 3], ['billboard', 1]], gap: 4, underScenery: false,
     rock: '#3a3030', boards: [['DANGER', '#ffcc00', '#141414'], ['LAVA VIEW', '#141414', '#ff7a1a'], ['MIDSHIP', '#e8e8e8', '#c81e1e']],
   },
+
+  // ---- Thunder Cup themes. water: the ground is sea; snowline: hillside above this
+  // height turns white; storm: rain and lightning.
+  sea: {
+    sky: ['#1f78d6', '#74bdf0', '#d4effb'], fog: '#c3e5f6', water: true,
+    ground: ['#1b6cc0', '#2277cb'],
+    road: ['#787a84', '#72747e'], rumble: ['#ffffff', '#ff7a1a'], lane: '#ffffff',
+    rail: ['#ffffff', '#1f9be0'], slab: '#d8d1bf', pillar: '#efe8d6',
+    far: { kind: 'hills', cols: ['#3f9a86', '#6cb89e'] }, near: { kind: 'clouds', col: '#ffffff' },
+    sun: { x: 380, y: 26, r: 13, col: '#fff7cf' },
+    scenery: [['boat', 3], ['buoy', 3], ['islet', 2]], gap: 6,
+    rock: '#9a8a70', boards: [['SURF SHACK', '#ffd23f', '#1a1a1a'], ["LEO'S GARAGE", '#1f4fa0', '#ffffff']],
+  },
+  peak: {
+    sky: ['#1d4fb8', '#5f9fe6', '#d8ecfb'], fog: '#cbe2f5', snowline: 44,
+    ground: ['#5ea84c', '#54a043'], cliff: '#8c8577',
+    road: ['#5d5f68', '#585a63'], rumble: ['#ffffff', '#d8322f'], lane: '#ffffff',
+    rail: ['#f2f2f2', '#d8322f'], slab: '#8c8577', pillar: '#a8a296',
+    far: { kind: 'mountains', cols: ['#4a6fa8', '#f4f8ff'] }, near: { kind: 'clouds', col: '#ffffff' },
+    sun: { x: 120, y: 22, r: 11, col: '#fffbe0' },
+    scenery: [['pine', 7], ['boulder', 2], ['billboard', 1]], gap: 3,
+    rock: '#8c8577', boards: [['SUMMIT 1KM', '#2b6fd6', '#ffffff'], ['HOT COCOA', '#7a2a1a', '#ffe9c0'], ['MIDSHIP', '#e8e8e8', '#c81e1e']],
+  },
+  meadow: {
+    sky: ['#3d8fe0', '#8fcaf4', '#e6f5fb'], fog: '#d6eef8',
+    ground: ['#7cc44f', '#71ba45'], cliff: '#9c7a52',
+    road: ['#6c6d76', '#666770'], rumble: ['#ffffff', '#2f9d45'], lane: '#f4f4f4',
+    rail: ['#ffffff', '#2f9d45'], slab: '#9c8f7a', pillar: '#c9c0ad',
+    far: { kind: 'hills', cols: ['#5f9f6a', '#8cc08a'] }, near: { kind: 'clouds', col: '#ffffff' },
+    sun: { x: 300, y: 24, r: 12, col: '#fff6c8' },
+    scenery: [['pine', 4], ['sheep', 3], ['barn', 1], ['billboard', 1]], gap: 4,
+    rock: '#8a7a64', boards: [['FARM SHOP', '#c81e1e', '#ffffff'], ["LEO'S GARAGE", '#1f4fa0', '#ffffff'], ['TUNNEL', '#ffd23f', '#1a1a1a']],
+  },
+  dusk: {
+    sky: ['#3a1e6e', '#c0507a', '#ffb07a'], fog: '#e3907c',
+    ground: ['#c8804e', '#bd7546'],
+    road: ['#6e5a5a', '#685454'], rumble: ['#ffd23f', '#3a1e6e'], lane: '#ffe9b8',
+    rail: ['#ffd23f', '#3a1e6e'], slab: '#7a5a50', pillar: '#a8745a',
+    far: { kind: 'mesas', cols: ['#7a3448', '#94405a'] }, near: null,
+    sun: { x: 250, y: 64, r: 20, col: '#ffe08a' },
+    scenery: [['cactus', 4], ['mesa', 2], ['boulder', 2], ['billboard', 1]], gap: 4,
+    rock: '#a05a44', boards: [['BIG AIR!', '#ffd23f', '#c81e1e'], ['TURBO!', '#141414', '#ffd23f'], ['MIDSHIP', '#e8e8e8', '#c81e1e']],
+  },
+  storm: {
+    sky: ['#0d0b1c', '#2a2648', '#4a4670'], fog: '#3a3658', stars: false, storm: true,
+    ground: ['#2c3a30', '#27342b'],
+    road: ['#3c3f4a', '#383b45'], rumble: ['#ffffff', '#7a5cff'], lane: '#d8d4ff',
+    rail: ['#d8d4ff', '#7a5cff'], slab: '#3a3a4a', pillar: '#5a5a6e',
+    far: { kind: 'mountains', cols: ['#1c1a34', '#5a5880'] }, near: { kind: 'clouds', col: '#4a4670' },
+    sun: null,
+    scenery: [['pineDark', 5], ['lamp', 2], ['billboard', 1]], gap: 4,
+    rock: '#4a4a5a', boards: [['THUNDER', '#141414', '#ffd23f'], ['NEON NIGHTS', '#14102a', '#ff3fa4'], ['MIDSHIP', '#e8e8e8', '#c81e1e']],
+  },
 };
 
 const S = Math.sin, C = Math.cos;
@@ -93,6 +147,63 @@ const COURSES = [
     blurb: 'Seven crossings over the lava fields. Hold on tight.',
     path: t => [S(2 * t) * 1.5, C(3 * t)],
   },
+
+  // ---- Thunder Cup: drawn courses. Each point is [x, z, height] in metres; the road
+  // passes through them on a smooth spline. Extras:
+  //   startPoint  which point the start line sits on
+  //   terrain     the road runs over hillsides that rise and fall with it
+  //   tunnels     [from point, to point] pairs: the road is roofed over between them
+  //   jumps       { at: point, gap: metres, rise: metres }: a kicker ramp, then a gap
+  {
+    id: 'stilts', name: 'Seaspray Stilts', theme: 'sea', startPoint: 4,
+    blurb: 'Roller-coaster stilts over the open sea. Keep it pinned over the crests.',
+    points: [[0, 0, 9], [120, 0, 10], [240, 10, 15], [350, 40, 9], [430, 110, 17], [450, 200, 10], [400, 280, 18],
+      [310, 310, 10], [220, 280, 17], [170, 200, 12], [140, 100, 20], [110, -20, 24], [60, -120, 15], [-40, -170, 20],
+      [-150, -150, 11], [-240, -80, 18], [-260, 30, 10], [-200, 120, 17], [-100, 110, 9], [-40, 40, 13]],
+  },
+  {
+    id: 'summit', name: 'Summit Switchback', theme: 'peak', startPoint: 0, terrain: true,
+    blurb: 'Three hairpins up a steep mountain, then a flat-out plunge down the far side.',
+    points: [[0, 0, 0], [150, 0, 0], [260, 20, 3], [330, 80, 8], [300, 140, 14], [180, 150, 22], [90, 160, 28],
+      [30, 190, 31], [40, 240, 33], [110, 250, 38], [220, 255, 45], [300, 270, 48], [300, 320, 50], [220, 335, 55],
+      [120, 340, 60], [40, 350, 62], [-60, 330, 58], [-150, 280, 48], [-200, 190, 36], [-210, 90, 22], [-170, 10, 10],
+      [-100, -30, 3], [-40, -15, 0]],
+  },
+  {
+    id: 'vale', name: 'Tunnel Vale', theme: 'meadow', startPoint: 0, terrain: true,
+    blurb: 'Rolling farmland with two tunnels bored through the hills.',
+    points: [[0, 0, 2], [140, 0, 4], [260, -20, 8], [360, -70, 10], [430, -150, 8], [450, -260, 4], [400, -350, 6],
+      [300, -390, 12], [190, -380, 8], [100, -330, 3], [20, -300, 6], [-80, -310, 10], [-170, -260, 9], [-220, -170, 6],
+      [-230, -70, 2], [-170, 0, 4], [-80, 20, 3]],
+    tunnels: [[2, 4], [10, 13]],
+  },
+  {
+    id: 'gorge', name: 'Big Air Gorge', theme: 'dusk', startPoint: 0,
+    blurb: 'A sunset figure-eight with a gap jump right over the road below.',
+    points: [[-150, -330, 2], [0, -360, 2], [150, -330, 3], [240, -240, 4], [230, -130, 4], [130, -60, 3], [0, 0, 2],
+      [-130, 60, 4], [-230, 130, 8], [-250, 250, 12], [-170, 350, 16], [0, 380, 18], [170, 350, 20], [250, 250, 22],
+      [230, 130, 22], [130, 65, 22], [0, 0, 22], [-130, -60, 14], [-230, -130, 8], [-250, -240, 4]],
+    jumps: [{ at: 15.6, gap: 26, rise: 5 }],
+  },
+  {
+    id: 'spiral', name: 'Thunder Spiral', theme: 'storm', startPoint: 0,
+    blurb: 'Climb a spiral into the storm clouds, then fly back down over it.',
+    points: (() => {
+      const p = [[0, 0, 4], [140, 0, 5], [250, 25, 7]];
+      // A spiral that tightens and climbs one and a half turns round (250, 250).
+      for (let k = 0; k <= 16; k++) {
+        const f = k / 16, a = -Math.PI / 2 + 0.35 + f * 1.444 * Math.PI * 2, r = 210 - 110 * f;
+        p.push([250 + C(a) * r, 250 + S(a) * r, 9 + 33 * f]);
+      }
+      return p.concat([[110, 350, 40], [-20, 330, 32], [-150, 280, 24], [-250, 190, 16], [-260, 80, 9], [-190, 10, 5], [-90, -10, 4]]);
+    })(),
+  },
+];
+
+// Two championships of five courses each.
+const CUPS = [
+  { name: 'Sunshine Cup', courses: [0, 1, 2, 3, 4], blurb: 'The original five knots and flyovers.' },
+  { name: 'Thunder Cup', courses: [5, 6, 7, 8, 9], blurb: 'Sea stilts, a mountain, tunnels, a big jump and a storm.' },
 ];
 
 // Ten cartoon racers. Faces are drawn from these specs; body is the car shape.

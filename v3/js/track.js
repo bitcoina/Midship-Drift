@@ -1,37 +1,69 @@
 'use strict';
 // Track builder for Midship Drift III.
 //
-// A course outline is a closed curve in the ground plane. The builder resamples it into
-// evenly spaced points, works out heading, curvature and banking, then looks for places
-// where the course crosses itself. At every crossing one branch is lifted on a smooth
-// hump so it clears the other as a bridge. Course authors only draw the shape.
+// A course outline is a closed curve in the ground plane: either a formula, path(t), or a
+// hand-drawn list of points, each with its own height, joined by a smooth spline. The
+// builder resamples it into evenly spaced points, works out heading, curvature and
+// banking, then looks for places where the course crosses itself. At every crossing one
+// branch is lifted on a smooth hump so it clears the other as a bridge.
+//
+// Drawn courses can also mark tunnels and jumps between their points; see courses.js.
 const Track = (() => {
   const SEG = 3;         // metres between samples
   const HALF = 8;        // half the road width
   const CLEAR = 8.5;     // how far an overpass sits above the road it crosses
   const NEAR = 20;       // horizontal distance at which two branches count as crossing
+  const TAU = Math.PI * 2;
+
+  // Closed Catmull-Rom spline through [x, z, h] points. Returns [x, z, h, p] where p is
+  // the position along the point list (2.5 = halfway between points 2 and 3).
+  function spline(pts) {
+    const P = pts.length;
+    return t => {
+      const f = ((t / TAU) * P) % P, i = Math.floor(f), u = f - i;
+      const p0 = pts[(i - 1 + P) % P], p1 = pts[i], p2 = pts[(i + 1) % P], p3 = pts[(i + 2) % P];
+      const c = k => {
+        const a = p0[k] || 0, b = p1[k] || 0, d = p2[k] || 0, e = p3[k] || 0;
+        return 0.5 * (2 * b + (-a + d) * u + (2 * a - 5 * b + 4 * d - e) * u * u + (-a + 3 * b - 3 * d + e) * u * u * u);
+      };
+      return [c(0), c(1), c(2), f];
+    };
+  }
 
   function build(course) {
+    const drawn = !!course.points, P = drawn ? course.points.length : 1;
+    const path = drawn ? spline(course.points) : course.path;
+
     // 1. Dense outline and its arc length.
     const N = 8000, raw = [], cum = [0];
-    for (let k = 0; k < N; k++) raw.push(course.path((k / N) * Math.PI * 2));
+    for (let k = 0; k < N; k++) raw.push(path((k / N) * TAU));
     for (let k = 1; k <= N; k++) {
       const a = raw[k - 1], b = raw[k % N];
       cum.push(cum[k - 1] + Math.hypot(b[0] - a[0], b[1] - a[1]));
     }
-    const rawLen = cum[N], scale = course.length / rawLen;
-    const n = Math.round(course.length / SEG), seg = course.length / n, L = n * seg;
+    const rawLen = cum[N], scale = course.length ? course.length / rawLen : 1;
+    const len = rawLen * scale, n = Math.round(len / SEG), seg = len / n, L = n * seg;
 
-    // 2. Resample evenly, starting from the course's start fraction.
-    const xs = new Float64Array(n), zs = new Float64Array(n);
+    // A drawn course can put its start line on one of its points.
+    let start = course.start || 0;
+    if (drawn && course.startPoint !== undefined) start = cum[Math.round((course.startPoint / P) * N) % N] / rawLen;
+
+    // 2. Resample evenly from the start line. cp is the position along the point list.
+    const xs = new Float64Array(n), zs = new Float64Array(n), rawH = new Float64Array(n), cp = new Float64Array(n);
     let k = 0;
     for (let i = 0; i < n; i++) {
-      let d = ((course.start || 0) + i / n) % 1 * rawLen;
+      const d = ((start + i / n) % 1) * rawLen;
       if (d < cum[k]) k = 0;
       while (cum[k + 1] < d) k++;
       const t = (d - cum[k]) / (cum[k + 1] - cum[k]), a = raw[k], b = raw[(k + 1) % N];
       xs[i] = (a[0] + (b[0] - a[0]) * t) * scale;
       zs[i] = (a[1] + (b[1] - a[1]) * t) * scale;
+      if (drawn) {
+        rawH[i] = a[2] + (b[2] - a[2]) * t;
+        let db = b[3] - a[3];
+        if (db < -P / 2) db += P;
+        cp[i] = (a[3] + db * t) % P;
+      }
     }
     let cx = 0, cz = 0;
     for (let i = 0; i < n; i++) { cx += xs[i]; cz += zs[i]; }
@@ -40,6 +72,14 @@ const Track = (() => {
     if (course.mirror) for (let i = 0; i < n; i++) xs[i] = -xs[i];
 
     const W = i => ((i % n) + n) % n;
+    // Is sample i between points a and b, going forward round the course?
+    const between = (i, a, b) => { const p = cp[i], span = (b - a + P) % P; return (p - a + P) % P < span; };
+    // The sample nearest to point a.
+    const sampleAt = a => {
+      let best = 0, bd = Infinity;
+      for (let i = 0; i < n; i++) { const d = Math.min(Math.abs(cp[i] - a), P - Math.abs(cp[i] - a)); if (d < bd) { bd = d; best = i; } }
+      return best;
+    };
 
     // 3. Heading, right vector and curvature. Right is cross(forward, up), so a
     // positive curvature bends the road to the right.
@@ -56,7 +96,7 @@ const Track = (() => {
 
     // 4. Base heights from the course, then bridges at the crossings.
     const base = new Float64Array(n);
-    for (let i = 0; i < n; i++) base[i] = course.height ? course.height(i / n) : 0;
+    for (let i = 0; i < n; i++) base[i] = rawH[i] + (course.height ? course.height(i / n) : 0);
 
     const grid = new Map(), CELL = 24;
     const key = (gx, gz) => gx * 73856 + gz;
@@ -98,8 +138,8 @@ const Track = (() => {
     // Centre (by circular mean) and half-width, in samples, of one branch of a crossing.
     const span = idx => {
       let sx = 0, sy = 0;
-      for (const k of idx) { const a = (k / n) * Math.PI * 2; sx += Math.cos(a); sy += Math.sin(a); }
-      const c = W(Math.round((Math.atan2(sy, sx) / (Math.PI * 2)) * n));
+      for (const k of idx) { const a = (k / n) * TAU; sx += Math.cos(a); sy += Math.sin(a); }
+      const c = W(Math.round((Math.atan2(sy, sx) / TAU) * n));
       return [c, Math.max(...idx.map(k => gap(k, c)))];
     };
     for (const ev of events) { ev.A = span(ev.pairs.map(p => p[0])); ev.B = span(ev.pairs.map(p => p[1])); }
@@ -142,11 +182,37 @@ const Track = (() => {
     }
     const h = pick.h;
     events.forEach((ev, e) => { ev.overB = pick.overB[e]; ev.over = ev.overB ? ev.B : ev.A; ev.lift = pick.lifts[e]; });
+    // Which samples were raised into a bridge (the hillside stays down when they are).
+    const raised = Uint8Array.from(h, (v, i) => (v - base[i] > 0.5 ? 1 : 0));
 
-    // 5. Banking leans the road into corners; slope is the climb per metre.
+    // 5. Tunnels and jumps on drawn courses.
+    // A jump is a ramp that kicks up `rise` metres, then `gap` metres of missing road.
+    // Inside the gap the road profile drops away steeply, so anything moving fast
+    // enough flies; a car that comes down inside the gap has fallen (see game.js).
+    const tunnel = new Uint8Array(n), gapF = new Uint8Array(n), jumps = [];
+    if (drawn) {
+      for (const [a, b] of course.tunnels || []) for (let i = 0; i < n; i++) if (between(i, a, b)) tunnel[i] = 1;
+      for (const j of course.jumps || []) {
+        const g = sampleAt(j.at), R = Math.round(38 / seg), G = Math.round(j.gap / seg);
+        for (let d = 0; d < R; d++) h[W(g - R + d)] += j.rise * ((d + 1) / R) ** 2;
+        const take = h[W(g - 1)];
+        for (let d = 0; d < G; d++) { h[W(g + d)] = take - 18 * Math.sin((Math.PI * d) / G); gapF[W(g + d)] = 1; }
+        jumps.push({ g, G, s: g * seg });
+      }
+    }
+
+    // 6. Banking leans the road into corners; slope is the climb per metre.
     const bank = smooth(Float64Array.from(curv, c => Math.max(-0.24, Math.min(0.24, c * 6))), 8, W);
     const slope = new Float64Array(n);
     for (let i = 0; i < n; i++) slope[i] = (h[W(i + 1)] - h[W(i - 1)]) / (2 * seg);
+    // At a jump's lip the slope is measured from the ramp side only, and at the far edge
+    // from the landing side only, so the drop in the gap doesn't round the lip off and
+    // rob the car of its kick.
+    for (const j of jumps) {
+      for (let d = 1; d <= 2; d++) { const i = W(j.g - d); slope[i] = (h[i] - h[W(i - 1)]) / seg; }
+      slope[W(j.g)] = slope[W(j.g - 1)];
+      for (let d = 0; d < 2; d++) { const i = W(j.g + j.G + d); slope[i] = (h[W(i + 1)] - h[i]) / seg; }
+    }
 
     // The lowest road (other than this stretch) within r metres of a point, or Infinity.
     function otherRoadBelow(x, z, i, r) {
@@ -168,12 +234,18 @@ const Track = (() => {
       out.k = lerp(curv); out.bank = lerp(bank); out.slope = lerp(slope);
       return out;
     }
+    // The jump whose gap contains distance s, if any.
+    function jumpAt(s) {
+      if (!jumps.length) return null;
+      const i = Math.floor((((s % L) + L) % L) / seg) % n;
+      return gapF[i] ? jumps.find(j => gap(i, j.g + j.G / 2) <= j.G / 2 + 1) || null : null;
+    }
 
     const T = {
       n, seg, L, xs, zs, h, fx, fz, curv, bank, slope, events, HALF, W, gap,
-      at, otherRoadBelow, nearby,
+      at, otherRoadBelow, nearby, tunnel, gapF, jumps, jumpAt, raised, cp,
     };
-    if (course.start !== undefined || course._picked) return T;
+    if (course.start !== undefined || course.startPoint !== undefined || course._picked) return T;
     // No start given: put the line on the straightest flat stretch, so the grid sits
     // well behind it and the first bridge is a little way after it.
     let best = 0, bestScore = Infinity;
